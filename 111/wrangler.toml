@@ -1,0 +1,39 @@
+name = "wordbridge-edu"
+main = "src/worker.js"
+compatibility_date = "2026-11-01"
+
+[assets]
+directory = "./src/frontend"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+[vars]
+APP_NAME = "WORD BRIDGE"
+APP_SLOGAN = "Where Languages Bring People Together."
+TRANSLATION_PRODUCT_NAME = "Dịch thuật Word Bridge"
+TRANSLATION_ENGLISH_NAME = "Word Bridge Translation"
+TRANSLATION_SERVICE_CODE = "Trans"
+TRANSLATION_ORIGIN = "https://dichthuat.wordbridge.io.vn"
+CANONICAL_ORIGIN = "https://wordbridge.io.vn"
+ZERO_USER_DATA_STORAGE = "true"
+DEFAULT_LOCALE = "vi-VN"
+TIMEZONE = "Asia/Ho_Chi_Minh"
+MONTHLY_QUOTA_GB = "50"
+EMAIL_FROM_NOREPLY = "noreply@wordbridge.io.vn"
+EMAIL_FROM_NAME = "WORD BRIDGE – Email tự động từ hệ thống"
+EMAIL_OFFICIAL_CONTACT = "wordbridge.education@gmail.com"
+EMAIL_CSKH = "cskh@wordbridge.io.vn"
+EMAIL_PARTNERSHIP = "contact@wordbridge.io.vn"
+
+# Hạ tầng Cloudflare D1 hiện có (Bảo toàn Database name "word" và Database ID)
+# Trong phạm vi Dịch thuật Word Bridge (Trans), D1 chỉ phục vụ bộ đếm nguyên tử site_metrics.total_accesses
+[[d1_databases]]
+binding = "DB"
+database_name = "word"
+database_id = "ce84cc48-6d49-409b-b45a-13ba3bc4a771"
+migrations_dir = "database/migrations"
+
+# Hạ tầng Cloudflare R2 hiện có (Bảo toàn Bucket "word", nghiêm cấm ghi tệp dịch thuật của người dùng)
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "word"

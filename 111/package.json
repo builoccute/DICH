@@ -1,0 +1,25 @@
+{
+  "name": "wordbridge-edu",
+  "version": "2026.3.0",
+  "description": "Dịch thuật Word Bridge (Word Bridge Translation - Trans, https://dichthuat.wordbridge.io.vn) & Hệ sinh thái Word Bridge (https://wordbridge.io.vn) – Nền tảng dịch thuật đa ngôn ngữ toàn cầu tuân thủ Zero User Data Storage.",
+  "main": "src/worker.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "npx wrangler dev",
+    "deploy": "npx wrangler deploy",
+    "d1:migrate": "npx wrangler d1 execute word --remote --file=./database/schema.sql && npx wrangler d1 execute word --remote --file=./database/seeds/01_reference_data.sql && npx wrangler d1 execute word --remote --file=./database/migrations/0007_translation_site_metrics_zero_storage.sql",
+    "migrate": "node scripts/manage.js migrate",
+    "seed": "node scripts/manage.js seed",
+    "build": "node scripts/manage.js build",
+    "backup": "node scripts/manage.js backup",
+    "restore": "node scripts/manage.js restore",
+    "test": "node tests/full-system.test.js",
+    "verify": "node scripts/manage.js verify"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "author": "Bùi Tấn Lộc, Cao Anh Nhựt, Võ Gia Như - WORD BRIDGE Founding Team",
+  "license": "UNLICENSED"
+}
