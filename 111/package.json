@@ -1,25 +1,32 @@
 {
-  "name": "wordbridge-edu",
-  "version": "2026.3.0",
-  "description": "Dịch thuật Word Bridge (Word Bridge Translation - Trans, https://dichthuat.wordbridge.io.vn) & Hệ sinh thái Word Bridge (https://wordbridge.io.vn) – Nền tảng dịch thuật đa ngôn ngữ toàn cầu tuân thủ Zero User Data Storage.",
-  "main": "src/worker.js",
+  "name": "wordbridge-translation",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Word Bridge Translation (Trans) - Global Translation Platform (dichthuat.wordbridge.io.vn) with Strict Zero User Data Storage",
   "type": "module",
+  "main": "src/worker.js",
   "scripts": {
+    "dev": "node src/server.js",
     "start": "node src/server.js",
-    "dev": "npx wrangler dev",
-    "deploy": "npx wrangler deploy",
-    "d1:migrate": "npx wrangler d1 execute word --remote --file=./database/schema.sql && npx wrangler d1 execute word --remote --file=./database/seeds/01_reference_data.sql && npx wrangler d1 execute word --remote --file=./database/migrations/0007_translation_site_metrics_zero_storage.sql",
-    "migrate": "node scripts/manage.js migrate",
-    "seed": "node scripts/manage.js seed",
-    "build": "node scripts/manage.js build",
-    "backup": "node scripts/manage.js backup",
-    "restore": "node scripts/manage.js restore",
+    "build": "node scripts/build.js",
+    "audit:privacy": "node scripts/build.js --audit-only",
     "test": "node tests/full-system.test.js",
-    "verify": "node scripts/manage.js verify"
+    "db:migrate:local": "npx wrangler d1 execute word --local --file=./migrations/0001_site_metrics_zero_storage.sql",
+    "db:migrate:remote": "npx wrangler d1 execute word --remote --file=./migrations/0001_site_metrics_zero_storage.sql",
+    "deploy": "npx wrangler deploy"
   },
+  "keywords": [
+    "word-bridge",
+    "translation",
+    "cloudflare-workers",
+    "cloudflare-d1",
+    "cloudflare-r2",
+    "zero-data-storage",
+    "dichthuat"
+  ],
+  "author": "Word Bridge Ecosystem (wordbridge.io.vn)",
+  "license": "UNLICENSED",
   "engines": {
-    "node": ">=18.0.0"
-  },
-  "author": "Bùi Tấn Lộc, Cao Anh Nhựt, Võ Gia Như - WORD BRIDGE Founding Team",
-  "license": "UNLICENSED"
+    "node": ">=20.0.0"
+  }
 }
