@@ -1,11 +1,6 @@
 /**
  * @file scripts/build.js
  * @description Kịch bản Kiểm toán Tĩnh & Build Dự án Word Bridge Translation.
- * Thực hiện:
- *   1. Kiểm tra sự tồn tại và tính toàn vẹn của tất cả các module mã nguồn.
- *   2. Kiểm tra cấu hình `wrangler.toml` (bảo toàn D1 `word` ce84cc48-6d49-409b-b45a-13ba3bc4a771, R2 `word`, và bật sẵn `[ai] binding = "AI"`).
- *   3. Kiểm toán tĩnh chính sách ZERO USER DATA STORAGE trên toàn bộ mã nguồn.
- *   4. Kiểm tra không tồn tại API Key / Secrets bị hardcode trong mã nguồn.
  */
 
 import * as fs from "node:fs";
@@ -34,6 +29,8 @@ const REQUIRED_FILES = [
   "src/services/translation-engine.js",
   "src/services/document-processor.js",
   "src/services/ocr-processor.js",
+  "src/services/website-translator.js",
+  "src/services/feedback-mailer.js",
   "src/ui/assets.js",
   "src/ui/template.js",
   "self-hosted-nmt/app.py",
@@ -70,6 +67,9 @@ function runBuildAndAudit() {
     }
     if (!/^\s*\[ai\]/m.test(wranglerContent) || !/^\s*binding\s*=\s*"AI"/m.test(wranglerContent)) {
       errors.push('wrangler.toml chưa bật mặc định [ai] binding = "AI".');
+    }
+    if (!wranglerContent.includes('destination_address = "wordbridge.education@gmail.com"')) {
+      errors.push('wrangler.toml chưa cấu hình destination_address = "wordbridge.education@gmail.com".');
     }
   }
 
@@ -126,7 +126,7 @@ function runBuildAndAudit() {
   }
 
   console.log(`  [✓] Đã xác minh ${REQUIRED_FILES.length}/${REQUIRED_FILES.length} tệp mã nguồn.`);
-  console.log('  [✓] Đã xác minh bật mặc định [ai] binding = "AI" (@cf/meta/m2m100-1.2b) trong wrangler.toml.');
+  console.log('  [✓] Đã xác minh bật mặc định [ai] binding = "AI" và SEND_EMAIL -> wordbridge.education@gmail.com.');
   console.log("  [✓] Đã xác minh bảo toàn Cloudflare D1 (word / ce84cc48-6d49-409b-b45a-13ba3bc4a771) và R2 (word).");
   console.log("  [✓] Đã xác minh tuân thủ tĩnh chính sách ZERO USER DATA STORAGE.");
   console.log("=== BUILD & PRIVACY AUDIT HOÀN TẤT THÀNH CÔNG ===");

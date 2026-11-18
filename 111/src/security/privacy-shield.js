@@ -21,22 +21,18 @@ export const NO_STORE_HEADERS = Object.freeze({
   "Cross-Origin-Resource-Policy": "same-origin",
   "X-Zero-User-Data-Storage": "enforced; only-metric=total_accesses",
   "Content-Security-Policy":
-    "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; media-src 'self' data: blob:; object-src 'none'; frame-ancestors 'none'; base-uri 'self';"
+    "default-src 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; media-src 'self' data: blob:; object-src 'none'; frame-ancestors 'none'; base-uri 'self';"
 });
 
 export const LIMITS = Object.freeze({
   MAX_TEXT_CHARS: 15000,
-  MAX_DOCUMENT_BYTES: 10 * 1024 * 1024, // 10 MB in-memory safe limit on Cloudflare Workers
-  MAX_IMAGE_BYTES: 5 * 1024 * 1024,     // 5 MB in-memory safe limit for OCR
+  MAX_DOCUMENT_BYTES: 50 * 1024 * 1024, // 50 MB theo đúng thiết kế Giao diện Dịch tài liệu (image_42d13d.jpg)
+  MAX_IMAGE_BYTES: 10 * 1024 * 1024,    // 10 MB theo đúng thiết kế Giao diện Dịch hình ảnh (image_42d17a.jpg)
   MAX_DOCUMENT_PAGES: 50,
   RATE_LIMIT_WINDOW_MS: 60 * 1000,
-  RATE_LIMIT_MAX_REQUESTS: 90
+  RATE_LIMIT_MAX_REQUESTS: 120
 });
 
-/**
- * Bộ giới hạn tốc độ (Rate Limiter) hoạt động hoàn toàn trên RAM, không lưu IP.
- * Sử dụng khóa băm xoay vòng theo phút và tự động giải phóng sau mỗi cửa sổ 60 giây.
- */
 export class EphemeralRateLimiter {
   constructor(maxRequests = LIMITS.RATE_LIMIT_MAX_REQUESTS, windowMs = LIMITS.RATE_LIMIT_WINDOW_MS) {
     this.maxRequests = maxRequests;
@@ -78,9 +74,6 @@ export class EphemeralRateLimiter {
 
 export const globalRateLimiter = new EphemeralRateLimiter();
 
-/**
- * Xóa trắng vùng nhớ tạm (Uint8Array / Buffer) ngay sau khi hoàn tất dịch tài liệu hoặc OCR.
- */
 export function wipeBuffer(bufferLike) {
   if (!bufferLike) return true;
   try {
@@ -89,16 +82,10 @@ export function wipeBuffer(bufferLike) {
     } else if (bufferLike instanceof ArrayBuffer) {
       new Uint8Array(bufferLike).fill(0);
     }
-  } catch (_) {
-    // Ignore read-only view errors
-  }
+  } catch (_) {}
   return true;
 }
 
-/**
- * Kiểm tra chữ ký byte thực tế (Magic Bytes) và cấu trúc tệp tải lên.
- * Không tin tưởng đơn thuần vào phần mở rộng hoặc header Content-Type từ trình duyệt.
- */
 export function verifyFileSignature(uint8Array, filename = "", category = "document") {
   if (!(uint8Array instanceof Uint8Array) || uint8Array.byteLength === 0) {
     return {
@@ -114,7 +101,7 @@ export function verifyFileSignature(uint8Array, filename = "", category = "docum
     return {
       valid: false,
       code: "ERR_FILE_TOO_LARGE",
-      message: `Kích thước tệp vượt quá giới hạn xử lý trực tiếp trên bộ nhớ tạm (${maxMb} MB). Để tuân thủ chính sách Zero User Data Storage (không lưu tệp lên Cloudflare R2), vui lòng chia nhỏ tệp dưới ${maxMb} MB.`
+      message: `Kích thước tệp vượt quá giới hạn tối đa (${maxMb} MB). Vui lòng chọn tệp nhỏ hơn ${maxMb} MB.`
     };
   }
 
@@ -128,7 +115,6 @@ export function verifyFileSignature(uint8Array, filename = "", category = "docum
   const b2 = uint8Array[2];
   const b3 = uint8Array[3];
 
-  // Chặn tệp thực thi Windows PE (MZ) hoặc Linux ELF (\x7fELF)
   if ((b0 === 0x4d && b1 === 0x5a) || (b0 === 0x7f && b1 === 0x45 && b2 === 0x4c && b3 === 0x46)) {
     return {
       valid: false,
@@ -155,7 +141,7 @@ export function verifyFileSignature(uint8Array, filename = "", category = "docum
       return {
         valid: false,
         code: "ERR_INVALID_IMAGE_SIGNATURE",
-        message: "Chữ ký byte của tệp không khớp với định dạng ảnh hỗ trợ (PNG, JPG/JPEG, WEBP)."
+        message: "Chữ ký byte của tệp không khớp với định dạng ảnh hỗ trợ (JPG, JPEG, PNG, WEBP)."
       };
     }
 
@@ -168,7 +154,6 @@ export function verifyFileSignature(uint8Array, filename = "", category = "docum
     };
   }
 
-  // Kiểm tra tài liệu: PDF (%PDF-)
   const isPdfMagic =
     uint8Array.byteLength >= 5 &&
     b0 === 0x25 &&
@@ -193,7 +178,6 @@ export function verifyFileSignature(uint8Array, filename = "", category = "docum
     };
   }
 
-  // Kiểm tra tài liệu OOXML (DOCX, XLSX, PPTX) có chữ ký ZIP PK\x03\x04
   const isZipMagic =
     uint8Array.byteLength >= 4 && b0 === 0x50 && b1 === 0x4b && b2 === 0x03 && b3 === 0x04;
 
@@ -253,7 +237,6 @@ export function verifyFileSignature(uint8Array, filename = "", category = "docum
     };
   }
 
-  // Kiểm tra tài liệu Word 97-2003 (.doc - OLE2 Compound Document D0 CF 11 E0)
   const isOle2Magic =
     uint8Array.byteLength >= 8 &&
     b0 === 0xd0 &&
@@ -277,7 +260,6 @@ export function verifyFileSignature(uint8Array, filename = "", category = "docum
     };
   }
 
-  // Kiểm tra TXT và CSV (kiểm tra byte nhị phân lạ)
   if (["txt", "csv"].includes(ext)) {
     const sampleLen = Math.min(uint8Array.byteLength, 4096);
     let nullBytes = 0;
@@ -304,13 +286,10 @@ export function verifyFileSignature(uint8Array, filename = "", category = "docum
     valid: false,
     code: "ERR_UNSUPPORTED_DOCUMENT_FORMAT",
     message:
-      "Định dạng tệp không được hỗ trợ. Hệ thống chỉ hỗ trợ: PDF, DOCX, DOC, TXT, PPTX, XLSX, CSV."
+      "Định dạng tệp không được hỗ trợ. Hệ thống chỉ hỗ trợ: PDF, DOCX, DOC, PPTX, XLSX, CSV, TXT."
   };
 }
 
-/**
- * Làm sạch chuỗi hiển thị HTML để phòng chống XSS tuyệt đối.
- */
 export function escapeHtml(str) {
   return String(str || "")
     .replace(/&/g, "&amp;")
@@ -320,10 +299,6 @@ export function escapeHtml(str) {
     .replace(/'/g, "&#39;");
 }
 
-/**
- * Ghi log kỹ thuật đã loại bỏ hoàn toàn nội dung nhạy cảm (Zero Content Logging).
- * Tuyệt đối không ghi văn bản nguồn, bản dịch, tên tệp, nội dung tệp hay IP người dùng.
- */
 export function sanitizedLog(level, eventCode, technicalMeta = {}) {
   const safeMeta = {};
   const allowedKeys = [

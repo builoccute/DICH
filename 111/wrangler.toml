@@ -15,10 +15,11 @@ APP_NAME_EN = "Word Bridge Translation"
 SERVICE_CODE = "Trans"
 PUBLIC_DOMAIN = "https://dichthuat.wordbridge.io.vn"
 ECOSYSTEM_DOMAIN = "https://wordbridge.io.vn"
+OFFICIAL_SUPPORT_EMAIL = "wordbridge.education@gmail.com"
 ZERO_USER_DATA_STORAGE = "true"
 MAX_TEXT_LENGTH = "15000"
-MAX_DOCUMENT_BYTES = "10485760"
-MAX_IMAGE_BYTES = "5242880"
+MAX_DOCUMENT_BYTES = "52428800"
+MAX_IMAGE_BYTES = "10485760"
 MAX_DOCUMENT_PAGES = "50"
 DEFAULT_PROVIDER_MODE = "workers_ai"
 
@@ -40,3 +41,8 @@ bucket_name = "word"
 # Chạy trực tiếp trên GPU biên của Cloudflare (Zero Data Retention, không cần thuê VPS riêng)
 [ai]
 binding = "AI"
+
+# Kết nối Cloudflare Email Routing gửi phản hồi tự động tới duy nhất wordbridge.education@gmail.com
+[[send_email]]
+name = "SEND_EMAIL"
+destination_address = "wordbridge.education@gmail.com"

@@ -1,10 +1,14 @@
 /**
  * @file src/api/router.js
  * @description Bộ định tuyến HTTP/Worker trung tâm của Dịch thuật Word Bridge (Trans).
- * Bao gồm:
- *   - Các API phục vụ giao diện Web (`/api/translate`, `/api/detect`, `/api/document/translate`, `/api/ocr/translate`)
- *   - Cổng Public & Ecosystem Translation API v1 của riêng Word Bridge (`/api/v1/translate`, `/api/v1/detect`,
- *     `/api/v1/languages`, `/api/v1/specs`) tích hợp Microservice NLLB-200 + CTranslate2 INT8 + 20 Chuyên ngành.
+ * Phục vụ:
+ *   - 08 Giao diện chính theo đúng 08 ảnh thiết kế (`/`, `/dich-van-ban`, `/dich-tai-lieu`,
+ *     `/dich-trang-web`, `/dich-hinh-anh`, `/gioi-thieu`, `/quyen-rieng-tu`, `/tro-giup`, `/phan-hoi`)
+ *   - Hệ thống nhận diện thương hiệu & SEO (`/assets/*`, `/manifest.webmanifest`, `/robots.txt`, `/sitemap.xml`)
+ *   - 04 Cơ chế dịch thuật: Văn bản (`/api/translate`), Tài liệu (`/api/document/translate`),
+ *     Trang web chống SSRF (`/api/website/translate`), Hình ảnh OCR (`/api/ocr/translate`)
+ *   - Hệ thống Gửi ý kiến phản hồi & Tự động gửi Email tới `wordbridge.education@gmail.com` (`/api/feedback`)
+ *   - Cổng Public & Ecosystem Translation API v1 (`/api/v1/*`)
  */
 
 import {
@@ -31,13 +35,39 @@ import {
 } from "../services/translation-engine.js";
 import { translateDocumentInMemory } from "../services/document-processor.js";
 import { processImageOcrAndTranslate } from "../services/ocr-processor.js";
-import { getLogoAsset } from "../ui/assets.js";
+import { translateWebsiteUrl } from "../services/website-translator.js";
+import {
+  submitFeedbackAndSendEmail,
+  FEEDBACK_TYPES,
+  OFFICIAL_SUPPORT_EMAIL
+} from "../services/feedback-mailer.js";
+import {
+  getLogoAsset,
+  WORD_BRIDGE_LOGO_SVG,
+  WORD_BRIDGE_ICON_SVG,
+  WORD_BRIDGE_OG_BANNER_SVG,
+  getWebManifestJson,
+  getRobotsTxt,
+  getSitemapXml
+} from "../ui/assets.js";
 import { renderTranslationAppHtml } from "../ui/template.js";
 
 const V1_CORS_HEADERS = Object.freeze({
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-WordBridge-Api-Key"
+});
+
+const ROUTE_TO_VIEW = Object.freeze({
+  "/": "text",
+  "/dich-van-ban": "text",
+  "/dich-tai-lieu": "document",
+  "/dich-trang-web": "website",
+  "/dich-hinh-anh": "image",
+  "/gioi-thieu": "about",
+  "/quyen-rieng-tu": "privacy",
+  "/tro-giup": "help",
+  "/phan-hoi": "feedback"
 });
 
 function jsonResponse(payload, status = 200, extraHeaders = {}) {
@@ -86,7 +116,6 @@ export async function dispatchRequest(request, env = {}) {
   const method = (request.method || "GET").toUpperCase();
   const pathname = url.pathname;
 
-  // Hỗ trợ CORS preflight cho cổng API v1 của Word Bridge
   if (method === "OPTIONS" && pathname.startsWith("/api/v1/")) {
     return new Response(null, {
       status: 204,
@@ -97,7 +126,6 @@ export async function dispatchRequest(request, env = {}) {
     });
   }
 
-  // Kiểm tra giới hạn tốc độ (Rate Limiting không lưu IP)
   const rateStatus = globalRateLimiter.check(request);
   if (!rateStatus.allowed) {
     return jsonResponse(
@@ -111,7 +139,7 @@ export async function dispatchRequest(request, env = {}) {
     );
   }
 
-  // 1. Tài nguyên thương hiệu tĩnh (Logo) -> KHÔNG tăng bộ đếm lượt truy cập
+  // 1. Hệ thống Nhận diện Thương hiệu, Favicon, PWA Manifest & SEO (KHÔNG tăng bộ đếm)
   if (method === "GET" && (pathname === "/assets/logo.jpg" || pathname === "/logo.jpg")) {
     const asset = getLogoAsset();
     return new Response(asset.bytes, {
@@ -124,20 +152,66 @@ export async function dispatchRequest(request, env = {}) {
     });
   }
 
-  if (method === "GET" && pathname === "/favicon.ico") {
-    return new Response(null, { status: 204, headers: NO_STORE_HEADERS });
+  if (method === "GET" && pathname === "/assets/logo-horizontal.svg") {
+    return new Response(WORD_BRIDGE_LOGO_SVG, {
+      status: 200,
+      headers: { "Content-Type": "image/svg+xml; charset=utf-8", "Cache-Control": "public, max-age=3600" }
+    });
   }
 
-  // 2. Trang chủ chính thức GET / -> Tăng bộ đếm nguyên tử nếu là lượt truy cập trang chính hợp lệ
-  if (method === "GET" && pathname === "/") {
+  if (
+    method === "GET" &&
+    (pathname === "/assets/logo-icon.svg" ||
+      pathname === "/assets/favicon.svg" ||
+      pathname === "/assets/icon-192.svg" ||
+      pathname === "/assets/icon-512.svg" ||
+      pathname === "/favicon.ico")
+  ) {
+    return new Response(WORD_BRIDGE_ICON_SVG, {
+      status: 200,
+      headers: { "Content-Type": "image/svg+xml; charset=utf-8", "Cache-Control": "public, max-age=3600" }
+    });
+  }
+
+  if (method === "GET" && pathname === "/assets/og-banner.svg") {
+    return new Response(WORD_BRIDGE_OG_BANNER_SVG, {
+      status: 200,
+      headers: { "Content-Type": "image/svg+xml; charset=utf-8", "Cache-Control": "public, max-age=3600" }
+    });
+  }
+
+  if (method === "GET" && pathname === "/manifest.webmanifest") {
+    return new Response(JSON.stringify(getWebManifestJson(), null, 2), {
+      status: 200,
+      headers: { "Content-Type": "application/manifest+json; charset=utf-8", "Cache-Control": "public, max-age=3600" }
+    });
+  }
+
+  if (method === "GET" && pathname === "/robots.txt") {
+    return new Response(getRobotsTxt(), {
+      status: 200,
+      headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=3600" }
+    });
+  }
+
+  if (method === "GET" && pathname === "/sitemap.xml") {
+    return new Response(getSitemapXml(), {
+      status: 200,
+      headers: { "Content-Type": "application/xml; charset=utf-8", "Cache-Control": "public, max-age=3600" }
+    });
+  }
+
+  // 2. Phục vụ 08 Giao diện chính của Word Bridge Translation
+  if (method === "GET" && ROUTE_TO_VIEW[pathname]) {
     let metrics;
-    if (isEligiblePageVisitRequest(request)) {
+    if (pathname === "/" && isEligiblePageVisitRequest(request)) {
       metrics = await incrementTotalAccesses(env);
     } else {
       metrics = await getTotalAccesses(env);
     }
     const providerStatus = getProvidersStatus(env);
     const html = renderTranslationAppHtml({
+      initialView: ROUTE_TO_VIEW[pathname],
       totalAccesses: metrics.totalAccesses,
       providerStatus
     });
@@ -162,7 +236,9 @@ export async function dispatchRequest(request, env = {}) {
       service: "Word Bridge Translation (Trans)",
       domain: "https://dichthuat.wordbridge.io.vn",
       ecosystem: "Word Bridge (wordbridge.io.vn)",
+      officialSupportEmail: OFFICIAL_SUPPORT_EMAIL,
       zeroUserDataStorage: true,
+      uiScreensImplemented: Object.keys(ROUTE_TO_VIEW),
       d1: d1Inspection,
       r2: r2Inspection,
       providers,
@@ -220,7 +296,7 @@ export async function dispatchRequest(request, env = {}) {
     });
   }
 
-  // 7. API danh sách 20 chuyên ngành dịch thuật
+  // 7. API danh sách 20 lĩnh vực chuyên ngành dịch thuật
   if (method === "GET" && pathname === "/api/domains") {
     return jsonResponse({
       ok: true,
@@ -244,9 +320,7 @@ export async function dispatchRequest(request, env = {}) {
   }
 
   // ===========================================================================
-  // CỔNG API DỊCH THUẬT ĐỘC LẬP CỦA WORD BRIDGE (PHƯƠNG ÁN 3: /api/v1/*)
-  // Hỗ trợ kết nối Microservice NLLB-200 + CTranslate2 INT8 + 20 Chuyên ngành
-  // và cho phép toàn bộ hệ sinh thái Word Bridge gọi trực tiếp.
+  // CỔNG API DỊCH THUẬT ĐỘC LẬP CỦA WORD BRIDGE (/api/v1/*)
   // ===========================================================================
   if (pathname.startsWith("/api/v1/")) {
     const authCheck = verifyOptionalApiToken(request, env);
@@ -283,11 +357,6 @@ export async function dispatchRequest(request, env = {}) {
               method: "GET",
               path: "/api/v1/languages"
             }
-          },
-          selfHostedNmtContainer: {
-            directory: "self-hosted-nmt/",
-            model: "facebook/nllb-200-distilled-600M (CTranslate2 INT8)",
-            flores200Supported: true
           }
         },
         200,
@@ -434,7 +503,7 @@ export async function dispatchRequest(request, env = {}) {
     });
   }
 
-  // 10. API dịch văn bản trực tuyến & chuyên ngành
+  // 10. API Cơ chế 1: Dịch văn bản trực tuyến & chuyên ngành
   if (method === "POST" && pathname === "/api/translate") {
     let body;
     try {
@@ -486,7 +555,7 @@ export async function dispatchRequest(request, env = {}) {
     });
   }
 
-  // 12. API dịch tài liệu trực tuyến trên bộ nhớ tạm (PDF, DOCX, XLSX, PPTX, TXT, CSV, DOC)
+  // 12. API Cơ chế 2: Dịch tài liệu trực tuyến trên bộ nhớ tạm (PDF, DOCX, DOC, PPTX, XLSX, CSV, TXT)
   if (method === "POST" && pathname === "/api/document/translate") {
     let fileBytes = null;
     try {
@@ -550,7 +619,34 @@ export async function dispatchRequest(request, env = {}) {
     }
   }
 
-  // 13. API dịch hình ảnh & nhận diện OCR trên bộ nhớ tạm (PNG, JPG/JPEG, WEBP)
+  // 13. API Cơ chế 3: Dịch trang web trực tuyến kèm chống SSRF (/api/website/translate)
+  if (method === "POST" && pathname === "/api/website/translate") {
+    let body;
+    try {
+      body = await request.json();
+    } catch (_) {
+      return jsonResponse(
+        { ok: false, code: "ERR_INVALID_JSON", message: "Yêu cầu JSON không hợp lệ." },
+        400
+      );
+    }
+
+    const result = await translateWebsiteUrl(body, env);
+    if (!result.ok) {
+      sanitizedLog("WARN", "WEBSITE_TRANSLATE_REJECTED", { errorCode: result.code });
+      return jsonResponse(result, 400);
+    }
+
+    sanitizedLog("INFO", "WEBSITE_TRANSLATE_COMPLETED", {
+      sourceLang: result.sourceLanguage?.resolved,
+      targetLang: result.targetLanguage?.code,
+      durationMs: result.durationMs
+    });
+
+    return jsonResponse(result, 200);
+  }
+
+  // 14. API Cơ chế 4: Dịch hình ảnh & nhận diện OCR trên bộ nhớ tạm (JPG, JPEG, PNG, WEBP)
   if (method === "POST" && pathname === "/api/ocr/translate") {
     let imageBytes = null;
     try {
@@ -617,7 +713,43 @@ export async function dispatchRequest(request, env = {}) {
     }
   }
 
-  // 14. Chặn rõ ràng mọi endpoint lịch sử / lưu trữ nếu có truy vấn trái phép
+  // 15. API Gửi ý kiến phản hồi & Tự động gửi Email tới wordbridge.education@gmail.com
+  if (method === "GET" && pathname === "/api/feedback/types") {
+    return jsonResponse({
+      ok: true,
+      officialSupportEmail: OFFICIAL_SUPPORT_EMAIL,
+      feedbackTypes: FEEDBACK_TYPES
+    });
+  }
+
+  if (method === "POST" && pathname === "/api/feedback") {
+    let body;
+    try {
+      body = await request.json();
+    } catch (_) {
+      return jsonResponse(
+        { ok: false, code: "ERR_INVALID_JSON", message: "Dữ liệu biểu mẫu phản hồi không hợp lệ." },
+        400
+      );
+    }
+
+    const clientSignal = (request.headers.get("cf-connecting-ip") || "anon-feedback").slice(0, 16);
+    const result = await submitFeedbackAndSendEmail(body, env, clientSignal);
+    if (!result.ok) {
+      const status =
+        result.code === "ERR_FEEDBACK_RATE_LIMITED"
+          ? 429
+          : result.code === "ERR_EMAIL_SERVICE_NOT_CONFIGURED" ||
+              result.code === "ERR_EMAIL_DELIVERY_FAILED"
+            ? 503
+            : 400;
+      return jsonResponse(result, status);
+    }
+
+    return jsonResponse(result, 200);
+  }
+
+  // 16. Chặn rõ ràng mọi endpoint lịch sử / lưu trữ nếu có truy vấn trái phép
   if (
     pathname.startsWith("/api/history") ||
     pathname.startsWith("/api/saved") ||
