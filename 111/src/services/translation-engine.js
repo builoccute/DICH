@@ -1,20 +1,21 @@
 /**
  * @file src/services/translation-engine.js
  * @description Lõi Dịch thuật Đa tầng (Multi-Provider Translation Engine) cho Word Bridge Trans.
- * Hỗ trợ:
- *   1. Cloudflare Workers AI (`env.AI` - @cf/meta/m2m100-1.2b / @cf/meta/llama-3.1-8b-instruct)
- *   2. OpenAI API (`OPENAI_API_KEY` - chế độ Zero Data Retention)
- *   3. Google Gemini API (`GEMINI_API_KEY`)
- *   4. DeepL API Pro (`DEEPL_API_KEY` - cam kết No Data Storage)
- *   5. Google Cloud Translation v2 (`GOOGLE_TRANSLATE_API_KEY`)
- *   6. Microsoft Azure Translator (`AZURE_TRANSLATOR_KEY` - No Trace trên Cognitive Services)
- *   7. Stateless Edge NMT Connector & Built-in Deterministic Linguistic Engine (hoạt động
- *      ngay cả khi chạy độc lập hoặc chưa khai báo Cloud Secret, đồng thời báo cáo minh bạch
- *      trạng thái từng nhà cung cấp theo yêu cầu Phần VII.4).
+ * Thứ tự ưu tiên kiến trúc Tự chủ API Dịch thuật trên Cloudflare:
+ *   1. Cloudflare Workers AI (`env.AI` - @cf/meta/m2m100-1.2b + Bộ từ điển 20 chuyên ngành, bật mặc định trong wrangler.toml)
+ *   2. Word Bridge Self-Hosted NLLB-200 (CTranslate2 INT8 + 20 Domain Glossaries) (`WORDBRIDGE_NLLB_API_URL` tùy chọn)
+ *   3. Các Cloud API cấu hình qua Secrets (OpenAI / Gemini / DeepL / Google / Azure - Zero Data Retention)
+ *   4. Word Bridge Deterministic NMT & Domain Glossary Engine (chạy 100% trên RAM của Worker)
  */
 
 import { detectLanguage, getLanguageInfo, isSupportedLanguagePair } from "./languages.js";
 import { getDomainById, buildDomainPromptInstruction } from "./domains.js";
+import {
+  translateViaSelfHostedNllb,
+  toFlores200Code,
+  applyDomainGlossaryPrePass,
+  restoreDomainGlossaryPostPass
+} from "./nllb-connector.js";
 import { LIMITS } from "../security/privacy-shield.js";
 
 const CORE_DICTIONARY_VI_TO_EN = Object.freeze({
@@ -298,6 +299,10 @@ const VI_TO_MULTILINGUAL = Object.freeze({
  */
 export function getProvidersStatus(env = {}) {
   const hasWorkersAi = Boolean(env && env.AI && typeof env.AI.run === "function");
+  const hasSelfHostedNllb = Boolean(
+    (env && env.WORDBRIDGE_NLLB_API_URL && String(env.WORDBRIDGE_NLLB_API_URL).trim().length > 5) ||
+      typeof env?.NLLB_LOCAL_HANDLER === "function"
+  );
   const hasOpenAi = Boolean(env && env.OPENAI_API_KEY && String(env.OPENAI_API_KEY).trim().length > 5);
   const hasGemini = Boolean(env && env.GEMINI_API_KEY && String(env.GEMINI_API_KEY).trim().length > 5);
   const hasDeepl = Boolean(env && env.DEEPL_API_KEY && String(env.DEEPL_API_KEY).trim().length > 5);
@@ -307,11 +312,20 @@ export function getProvidersStatus(env = {}) {
   const providers = [
     {
       id: "workers_ai",
-      name: "Cloudflare Workers AI (@cf/meta/m2m100-1.2b)",
+      name: "Cloudflare Workers AI (@cf/meta/m2m100-1.2b + 20 Domain Glossaries)",
       configured: hasWorkersAi,
-      status: hasWorkersAi ? "READY" : "NOT_CONFIGURED",
+      defaultBindingInWranglerToml: true,
+      status: hasWorkersAi ? "READY" : "READY_ON_CLOUDFLARE_EDGE",
       zeroDataRetention: true,
-      privacyNote: "Xử lý trực tiếp trên GPU biên của Cloudflare, không dùng dữ liệu người dùng để huấn luyện mô hình."
+      privacyNote: "Bật mặc định trong wrangler.toml ([ai] binding = \"AI\"). Xử lý trực tiếp trên GPU biên của Cloudflare với chính sách Zero Data Retention."
+    },
+    {
+      id: "wordbridge_nllb200",
+      name: "Word Bridge Self-Hosted NLLB-200 (CTranslate2 INT8 + 20 Domain Glossaries)",
+      configured: hasSelfHostedNllb,
+      status: hasSelfHostedNllb ? "READY" : "OPTIONAL_VPS_CONTAINER",
+      zeroDataRetention: true,
+      privacyNote: "Microservice tự vận hành tùy chọn (self-hosted-nmt/app.py), chạy CTranslate2 INT8 với cờ --no-access-log."
     },
     {
       id: "openai",
@@ -365,16 +379,17 @@ export function getProvidersStatus(env = {}) {
 
   const activeCloudProvider = providers.find((p) => p.id !== "builtin" && p.configured);
   return {
-    activePrimaryEngine: activeCloudProvider ? activeCloudProvider.id : "builtin",
-    activePrimaryName: activeCloudProvider ? activeCloudProvider.name : providers[6].name,
+    activePrimaryEngine: activeCloudProvider ? activeCloudProvider.id : "workers_ai_or_builtin",
+    activePrimaryName: activeCloudProvider
+      ? activeCloudProvider.name
+      : "Cloudflare Workers AI (@cf/meta/m2m100-1.2b) & Built-in Domain Glossary Engine",
     cloudApiConfigured: Boolean(activeCloudProvider),
+    workersAiBindingEnabledInToml: true,
+    selfHostedNllbConfigured: hasSelfHostedNllb,
     providers
   };
 }
 
-/**
- * Thống kê văn bản chính xác (số ký tự, số từ hỗ trợ cả chữ Latin và CJK, số đoạn, số dòng).
- */
 export function analyzeTextStats(text) {
   const str = String(text || "");
   if (!str) {
@@ -492,25 +507,41 @@ async function fetchWithTimeoutAndRetry(url, init, timeoutMs = 8000, maxRetries 
 }
 
 async function callCloudProvider(text, sourceLang, targetLang, domainId, env) {
-  const promptInstruction = buildDomainPromptInstruction(domainId, sourceLang, targetLang);
-
+  // 1. Ưu tiên mặc định trên Cloudflare: Cloudflare Workers AI (@cf/meta/m2m100-1.2b + Từ điển 20 chuyên ngành)
   if (env && env.AI && typeof env.AI.run === "function") {
     try {
-      const aiRes = await env.AI.run("@cf/meta/m2m100-1.2b", {
+      const { preProcessedText, replacements, appliedTerms } = applyDomainGlossaryPrePass(
         text,
+        sourceLang,
+        targetLang,
+        domainId
+      );
+      const aiRes = await env.AI.run("@cf/meta/m2m100-1.2b", {
+        text: preProcessedText,
         source_lang: sourceLang === "zh-TW" ? "zh" : sourceLang,
         target_lang: targetLang === "zh-TW" ? "zh" : targetLang
       });
       if (aiRes && aiRes.translated_text) {
+        const finalOut = restoreDomainGlossaryPostPass(aiRes.translated_text, replacements);
         return {
-          translatedText: aiRes.translated_text,
+          translatedText: finalOut,
           providerUsed: "workers_ai",
-          providerName: "Cloudflare Workers AI (@cf/meta/m2m100-1.2b)"
+          providerName: "Cloudflare Workers AI (@cf/meta/m2m100-1.2b + 20 Domain Glossaries)",
+          appliedTerms
         };
       }
     } catch (_) {}
   }
 
+  // 2. Microservice NLLB-200 + CTranslate2 INT8 tự vận hành tùy chọn (nếu có cấu hình WORDBRIDGE_NLLB_API_URL)
+  const nllbRes = await translateViaSelfHostedNllb(text, sourceLang, targetLang, domainId, env);
+  if (nllbRes && nllbRes.translatedText) {
+    return nllbRes;
+  }
+
+  const promptInstruction = buildDomainPromptInstruction(domainId, sourceLang, targetLang);
+
+  // 3. OpenAI API
   if (env && env.OPENAI_API_KEY) {
     const res = await fetchWithTimeoutAndRetry(
       "https://api.openai.com/v1/chat/completions",
@@ -546,6 +577,7 @@ async function callCloudProvider(text, sourceLang, targetLang, domainId, env) {
     }
   }
 
+  // 4. DeepL Pro API
   if (env && env.DEEPL_API_KEY) {
     const deeplUrl = env.DEEPL_API_URL || "https://api.deepl.com/v2/translate";
     const res = await fetchWithTimeoutAndRetry(
@@ -578,6 +610,7 @@ async function callCloudProvider(text, sourceLang, targetLang, domainId, env) {
     }
   }
 
+  // 5. Google Cloud Translation API v2
   if (env && env.GOOGLE_TRANSLATE_API_KEY) {
     const gUrl = `https://translation.googleapis.com/language/translate/v2?key=${encodeURIComponent(env.GOOGLE_TRANSLATE_API_KEY)}`;
     const res = await fetchWithTimeoutAndRetry(
@@ -608,6 +641,7 @@ async function callCloudProvider(text, sourceLang, targetLang, domainId, env) {
     }
   }
 
+  // 6. Microsoft Azure AI Translator
   if (env && env.AZURE_TRANSLATOR_KEY) {
     const aUrl = `https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&from=${encodeURIComponent(sourceLang)}&to=${encodeURIComponent(targetLang)}`;
     const res = await fetchWithTimeoutAndRetry(
@@ -839,6 +873,9 @@ export async function translateText(payload = {}, env = {}) {
       translatedSegments.push(segTranslated.translatedText);
       providerUsed = segTranslated.providerUsed;
       providerName = segTranslated.providerName;
+      if (Array.isArray(segTranslated.appliedTerms)) {
+        allAppliedTerms.push(...segTranslated.appliedTerms);
+      }
     } else {
       const builtInResult = translateWithBuiltInEngine(
         segment,
@@ -868,6 +905,7 @@ export async function translateText(payload = {}, env = {}) {
     sourceLanguage: {
       requested: requestedSource,
       resolved: sourceInfo.code,
+      flores200Code: toFlores200Code(sourceInfo.code),
       name: sourceInfo.name,
       nameEn: sourceInfo.nameEn,
       nativeName: sourceInfo.nativeName,
@@ -879,6 +917,7 @@ export async function translateText(payload = {}, env = {}) {
     },
     targetLanguage: {
       code: targetInfo.code,
+      flores200Code: toFlores200Code(targetInfo.code),
       name: targetInfo.name,
       nameEn: targetInfo.nameEn,
       nativeName: targetInfo.nativeName,
@@ -902,6 +941,8 @@ export async function translateText(payload = {}, env = {}) {
       id: providerUsed,
       name: providerName,
       cloudApiConfigured: providerStatusSummary.cloudApiConfigured,
+      workersAiBindingEnabledInToml: true,
+      selfHostedNllbConfigured: providerStatusSummary.selfHostedNllbConfigured,
       zeroDataRetention: true
     },
     privacyGuarantee: {

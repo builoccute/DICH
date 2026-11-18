@@ -1,8 +1,10 @@
 /**
  * @file src/api/router.js
  * @description Bộ định tuyến HTTP/Worker trung tâm của Dịch thuật Word Bridge (Trans).
- * Áp dụng chính sách `Cache-Control: no-store` trên mọi phản hồi API và kiểm soát chặt chẽ
- * bộ đếm lượt truy cập D1 (`site_metrics.total_accesses`) cùng lớp khóa R2 (`R2ZeroStorageGuard`).
+ * Bao gồm:
+ *   - Các API phục vụ giao diện Web (`/api/translate`, `/api/detect`, `/api/document/translate`, `/api/ocr/translate`)
+ *   - Cổng Public & Ecosystem Translation API v1 của riêng Word Bridge (`/api/v1/translate`, `/api/v1/detect`,
+ *     `/api/v1/languages`, `/api/v1/specs`) tích hợp Microservice NLLB-200 + CTranslate2 INT8 + 20 Chuyên ngành.
  */
 
 import {
@@ -20,6 +22,7 @@ import {
 } from "../security/privacy-shield.js";
 import { GLOBAL_LANGUAGES, detectLanguage } from "../services/languages.js";
 import { SPECIALIZED_DOMAINS } from "../services/domains.js";
+import { toFlores200Code } from "../services/nllb-connector.js";
 import {
   translateText,
   getProvidersStatus,
@@ -30,6 +33,12 @@ import { translateDocumentInMemory } from "../services/document-processor.js";
 import { processImageOcrAndTranslate } from "../services/ocr-processor.js";
 import { getLogoAsset } from "../ui/assets.js";
 import { renderTranslationAppHtml } from "../ui/template.js";
+
+const V1_CORS_HEADERS = Object.freeze({
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-WordBridge-Api-Key"
+});
 
 function jsonResponse(payload, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(payload), {
@@ -56,12 +65,37 @@ function base64ToUint8Array(base64Str) {
   return bytes;
 }
 
+function verifyOptionalApiToken(request, env) {
+  const configuredToken = env?.WORDBRIDGE_API_TOKEN ? String(env.WORDBRIDGE_API_TOKEN).trim() : "";
+  if (!configuredToken) return { valid: true };
+
+  const headerKey = request.headers.get("X-WordBridge-Api-Key") || "";
+  const authHeader = (request.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "").trim();
+  if (headerKey === configuredToken || authHeader === configuredToken) {
+    return { valid: true };
+  }
+  return {
+    valid: false,
+    message: "Khóa xác thực X-WordBridge-Api-Key hoặc Bearer Token không hợp lệ."
+  };
+}
+
 export async function dispatchRequest(request, env = {}) {
-  // Khóa bảo vệ R2 ngay tại điểm vào của mọi request
   const guardedR2 = createGuardedR2(env);
   const url = new URL(request.url, "https://dichthuat.wordbridge.io.vn");
   const method = (request.method || "GET").toUpperCase();
   const pathname = url.pathname;
+
+  // Hỗ trợ CORS preflight cho cổng API v1 của Word Bridge
+  if (method === "OPTIONS" && pathname.startsWith("/api/v1/")) {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        ...NO_STORE_HEADERS,
+        ...V1_CORS_HEADERS
+      }
+    });
+  }
 
   // Kiểm tra giới hạn tốc độ (Rate Limiting không lưu IP)
   const rateStatus = globalRateLimiter.check(request);
@@ -132,6 +166,12 @@ export async function dispatchRequest(request, env = {}) {
       d1: d1Inspection,
       r2: r2Inspection,
       providers,
+      ownApiV1Endpoints: [
+        "GET /api/v1/specs",
+        "GET /api/v1/languages",
+        "POST /api/v1/detect",
+        "POST /api/v1/translate"
+      ],
       forbiddenFeaturesDisabled: [
         "translation_history",
         "saved_translations",
@@ -171,9 +211,12 @@ export async function dispatchRequest(request, env = {}) {
   if (method === "GET" && pathname === "/api/languages") {
     return jsonResponse({
       ok: true,
-      totalLanguages: GLOBAL_LANGUAGES.length - 1, // trừ mục 'auto'
+      totalLanguages: GLOBAL_LANGUAGES.length - 1,
       note: "Word Bridge Trans là hệ thống dịch thuật toàn cầu, không giới hạn trong 05 ngôn ngữ học tập của Word Bridge Learning.",
-      languages: GLOBAL_LANGUAGES
+      languages: GLOBAL_LANGUAGES.map((l) => ({
+        ...l,
+        flores200Code: l.code === "auto" ? "auto" : toFlores200Code(l.code)
+      }))
     });
   }
 
@@ -198,6 +241,176 @@ export async function dispatchRequest(request, env = {}) {
       ok: true,
       ...getProvidersStatus(env)
     });
+  }
+
+  // ===========================================================================
+  // CỔNG API DỊCH THUẬT ĐỘC LẬP CỦA WORD BRIDGE (PHƯƠNG ÁN 3: /api/v1/*)
+  // Hỗ trợ kết nối Microservice NLLB-200 + CTranslate2 INT8 + 20 Chuyên ngành
+  // và cho phép toàn bộ hệ sinh thái Word Bridge gọi trực tiếp.
+  // ===========================================================================
+  if (pathname.startsWith("/api/v1/")) {
+    const authCheck = verifyOptionalApiToken(request, env);
+    if (!authCheck.valid) {
+      return jsonResponse(
+        { ok: false, code: "ERR_UNAUTHORIZED_API_KEY", message: authCheck.message },
+        401,
+        V1_CORS_HEADERS
+      );
+    }
+
+    if (method === "GET" && pathname === "/api/v1/specs") {
+      return jsonResponse(
+        {
+          ok: true,
+          apiName: "Word Bridge Global Translation API v1",
+          version: "1.0.0",
+          architecture:
+            "Option 3: Self-Hosted NLLB-200 Distilled 600M (CTranslate2 INT8) + Cloudflare Workers AI (@cf/meta/m2m100-1.2b) + 20 Specialized Domain Glossaries",
+          zeroUserDataStorage: true,
+          endpoints: {
+            translate: {
+              method: "POST",
+              path: "/api/v1/translate",
+              acceptsBatchArray: true,
+              fields: ["text (string | string[])", "source_lang", "target_lang", "domain"]
+            },
+            detect: {
+              method: "POST",
+              path: "/api/v1/detect",
+              fields: ["text"]
+            },
+            languages: {
+              method: "GET",
+              path: "/api/v1/languages"
+            }
+          },
+          selfHostedNmtContainer: {
+            directory: "self-hosted-nmt/",
+            model: "facebook/nllb-200-distilled-600M (CTranslate2 INT8)",
+            flores200Supported: true
+          }
+        },
+        200,
+        V1_CORS_HEADERS
+      );
+    }
+
+    if (method === "GET" && pathname === "/api/v1/languages") {
+      return jsonResponse(
+        {
+          ok: true,
+          totalLanguages: GLOBAL_LANGUAGES.length - 1,
+          languages: GLOBAL_LANGUAGES.filter((l) => l.code !== "auto").map((l) => ({
+            code: l.code,
+            flores200Code: toFlores200Code(l.code),
+            name: l.name,
+            nameEn: l.nameEn,
+            nativeName: l.nativeName,
+            dir: l.dir
+          }))
+        },
+        200,
+        V1_CORS_HEADERS
+      );
+    }
+
+    if (method === "POST" && pathname === "/api/v1/detect") {
+      let body;
+      try {
+        body = await request.json();
+      } catch (_) {
+        return jsonResponse(
+          { ok: false, code: "ERR_INVALID_JSON", message: "Payload JSON không hợp lệ." },
+          400,
+          V1_CORS_HEADERS
+        );
+      }
+      const det = detectLanguage(body?.text || "");
+      return jsonResponse(
+        {
+          ok: true,
+          language: det.code,
+          flores200Code: det.code === "und" ? "und" : toFlores200Code(det.code),
+          name: det.name,
+          confidence: det.confidence,
+          isMultilingual: det.isMultilingual,
+          secondaryLanguages: det.secondaryLanguages || [],
+          zeroUserDataStorage: true
+        },
+        200,
+        V1_CORS_HEADERS
+      );
+    }
+
+    if (method === "POST" && pathname === "/api/v1/translate") {
+      let body;
+      try {
+        body = await request.json();
+      } catch (_) {
+        return jsonResponse(
+          { ok: false, code: "ERR_INVALID_JSON", message: "Payload JSON không hợp lệ." },
+          400,
+          V1_CORS_HEADERS
+        );
+      }
+
+      const sourceLang = String(body?.source_lang || body?.sourceLang || "auto");
+      const targetLang = String(body?.target_lang || body?.targetLang || "en");
+      const domain = String(body?.domain || "general");
+      const input = body?.text ?? body?.q;
+
+      if (Array.isArray(input)) {
+        if (input.length === 0 || input.length > 50) {
+          return jsonResponse(
+            {
+              ok: false,
+              code: "ERR_INVALID_BATCH_SIZE",
+              message: "Mảng văn bản dịch hàng loạt (batch) phải từ 1 đến 50 phần tử."
+            },
+            400,
+            V1_CORS_HEADERS
+          );
+        }
+
+        const translations = [];
+        for (const itemText of input) {
+          const singleRes = await translateText(
+            { text: String(itemText || ""), sourceLang, targetLang, domain },
+            env
+          );
+          if (!singleRes.ok) {
+            return jsonResponse(singleRes, 400, V1_CORS_HEADERS);
+          }
+          translations.push({
+            translatedText: singleRes.translatedText,
+            detectedSourceLanguage: singleRes.sourceLanguage.resolved,
+            srcFlores200: singleRes.sourceLanguage.flores200Code,
+            tgtFlores200: singleRes.targetLanguage.flores200Code
+          });
+        }
+
+        return jsonResponse(
+          {
+            ok: true,
+            batchCount: translations.length,
+            domain,
+            translations,
+            zeroUserDataStorage: true
+          },
+          200,
+          V1_CORS_HEADERS
+        );
+      }
+
+      const singleRes = await translateText(
+        { text: typeof input === "string" ? input : "", sourceLang, targetLang, domain },
+        env
+      );
+      if (!singleRes.ok) {
+        return jsonResponse(singleRes, 400, V1_CORS_HEADERS);
+      }
+      return jsonResponse(singleRes, 200, V1_CORS_HEADERS);
+    }
   }
 
   // 9. API nhận diện ngôn ngữ tự động
@@ -250,7 +463,7 @@ export async function dispatchRequest(request, env = {}) {
     return jsonResponse(result, 200);
   }
 
-  // 11. API công cụ tiện ích văn bản trong phiên (đếm từ, chuẩn hóa khoảng trắng, chữ hoa/thường)
+  // 11. API công cụ tiện ích văn bản trong phiên
   if (method === "POST" && pathname === "/api/tools/text") {
     let body;
     try {
@@ -323,7 +536,7 @@ export async function dispatchRequest(request, env = {}) {
       });
 
       return jsonResponse(result, 200);
-    } catch (err) {
+    } catch (_) {
       return jsonResponse(
         {
           ok: false,

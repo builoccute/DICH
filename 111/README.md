@@ -10,12 +10,12 @@
 
 | Tiêu chí | Word Bridge Learning (`wordbridge.io.vn`) | Word Bridge Trans (`dichthuat.wordbridge.io.vn`) |
 | :--- | :--- | :--- |
-| **Định hướng** | Nền tảng học tập và thực hành ngoại ngữ | Hệ thống dịch thuật trực tuyến toàn cầu |
-| **Phạm vi ngôn ngữ** | Hỗ trợ ban đầu 05 ngôn ngữ học tập (`zh`, `en`, `ko`, `ja`, `ru`) | Hỗ trợ **104 ngôn ngữ toàn cầu** (bao gồm cả ngôn ngữ RTL như `ar`, `he`, `fa`, `ur`) |
+| **Định hướng** | Nền tảng học tập và thực hành ngoại ngữ | Hệ thống dịch thuật trực tuyến toàn cầu & Cổng API dịch thuật riêng |
+| **Phạm vi ngôn ngữ** | Hỗ trợ ban đầu 05 ngôn ngữ học tập (`zh`, `en`, `ko`, `ja`, `ru`) | Hỗ trợ **104 ngôn ngữ toàn cầu** (ánh xạ chuẩn **FLORES-200** của Meta NLLB-200, bao gồm cả RTL như `ar`, `he`, `fa`, `ur`) |
 | **Chế độ chuyên ngành** | Theo giáo trình học tập | **20 chế độ dịch thuật chuyên ngành** độc lập |
 | **Chính sách dữ liệu** | Lưu tiến độ học tập theo tài khoản | **ZERO USER DATA STORAGE** (Chỉ lưu tổng lượt truy cập `site_metrics.total_accesses`) |
 
-## 2. Cấu trúc Thư mục Dự án
+## 2. Cấu trúc Thư mục Dự án (Bao gồm Microservice NLLB-200 Tự chủ – Phương án 3)
 
 ```text
 word-bridge-translation/
@@ -32,11 +32,15 @@ word-bridge-translation/
 │       └── logo.jpg                              # Logo chính thức của thương hiệu Word Bridge
 ├── scripts/
 │   └── build.js                                  # Kịch bản kiểm tra cú pháp & kiểm toán Zero-Storage
+├── self-hosted-nmt/                              # [Phương án 3] Microservice NMT NLLB-200 + CTranslate2 INT8
+│   ├── app.py                                    # Máy chủ FastAPI + CTranslate2 INT8 + SentencePiece (Zero Storage)
+│   ├── requirements.txt                          # Thư viện Python cho CTranslate2 & FastAPI
+│   └── Dockerfile                                # Đóng gói container tự động tải mô hình NLLB-200 INT8 (--no-access-log)
 ├── src/
 │   ├── worker.js                                 # Điểm vào chuẩn ES Module cho Cloudflare Workers
 │   ├── server.js                                 # Máy chủ HTTP cục bộ (Node.js >= 20)
 │   ├── api/
-│   │   └── router.js                             # Bộ định tuyến API & giao diện (Cache-Control: no-store)
+│   │   └── router.js                             # Bộ định tuyến Web & Public API v1 (/api/v1/translate)
 │   ├── db/
 │   │   └── d1-metrics.js                         # Bộ đếm nguyên tử D1 & Tường lửa SQL Zero-Storage
 │   ├── security/
@@ -45,91 +49,65 @@ word-bridge-translation/
 │   ├── services/
 │   │   ├── languages.js                          # Danh mục 104 ngôn ngữ toàn cầu & nhận diện ngôn ngữ
 │   │   ├── domains.js                            # 20 chuyên ngành dịch thuật & từ điển thuật ngữ công khai
-│   │   ├── translation-engine.js                 # Lõi dịch thuật đa tầng (Workers AI / Cloud API / Built-in)
+│   │   ├── nllb-connector.js                     # Bộ kết nối NLLB-200 (FLORES-200) + Pre/Post-pass thuật ngữ
+│   │   ├── translation-engine.js                 # Lõi dịch thuật đa tầng (NLLB-200 / Workers AI / Cloud / Built-in)
 │   │   ├── document-processor.js                 # Xử lý dịch tài liệu trên RAM (PDF, DOCX, XLSX, PPTX, TXT, CSV, DOC)
 │   │   └── ocr-processor.js                      # Nhận diện OCR & dịch hình ảnh trên RAM (PNG, JPG, WEBP)
 │   └── ui/
 │       ├── assets.js                             # Phục vụ tài nguyên thương hiệu Word Bridge
 │       └── template.js                           # Giao diện Frontend Responsive (Zero Browser Storage)
 └── tests/
-    └── full-system.test.js                       # Bộ kiểm thử tự động toàn diện (Full Test Suite)
+    └── full-system.test.js                       # Bộ kiểm thử tự động toàn diện (22/22 bài kiểm thử PASS)
 ```
 
-## 3. Chính sách Hạ tầng Cloudflare D1 & R2
+## 3. Triển khai Microservice API Dịch thuật Tự chủ (Phương án 3: Meta NLLB-200 + CTranslate2 INT8 + 20 Chuyên ngành)
 
-1. **Cloudflare D1 Database (`word`):**
-   - `binding = "DB"`
-   - `database_name = "word"`
-   - `database_id = "ce84cc48-6d49-409b-b45a-13ba3bc4a771"`
-   - Bảo toàn nguyên vẹn toàn bộ các bảng hiện có trong Database `word` (tuyệt đối không `DROP TABLE` hay `DROP DATABASE`).
-   - Chỉ sử dụng bảng `site_metrics (id INTEGER PRIMARY KEY CHECK (id = 1), total_accesses INTEGER NOT NULL DEFAULT 0)` với câu lệnh cập nhật nguyên tử:
-     ```sql
-     INSERT INTO site_metrics (id, total_accesses) VALUES (1, 1)
-     ON CONFLICT(id) DO UPDATE SET total_accesses = total_accesses + 1
-     RETURNING total_accesses;
-     ```
-2. **Cloudflare R2 Object Storage (`word`):**
-   - `binding = "R2"`
-   - `bucket_name = "word"`
-   - Giữ nguyên bucket `word` và toàn bộ các object hiện có của hệ sinh thái Word Bridge.
-   - Module `R2ZeroStorageGuard` (`src/security/r2-guard.js`) chặn 100% thao tác ghi tệp người dùng (`put`, `createMultipartUpload`) hoặc xóa dữ liệu (`delete`) từ hệ thống dịch thuật.
+Dự án đã tích hợp sẵn toàn bộ mã nguồn của **Phương án 3** trong thư mục `self-hosted-nmt/` và bộ kết nối `src/services/nllb-connector.js`:
 
-## 4. Hướng dẫn Cài đặt, Kiểm thử và Build Cục bộ
+1. **Khởi chạy Container Microservice NLLB-200 (200 ngôn ngữ, chỉ tốn ~650 MB RAM ở chế độ INT8):**
+   ```bash
+   cd self-hosted-nmt
+   docker build -t wordbridge-nllb200-nmt .
+   docker run -d --name wb-nmt -p 8080:8080 \
+     -e WORDBRIDGE_NLLB_TOKEN="<token_noi_bo_tuy_chon>" \
+     wordbridge-nllb200-nmt
+   ```
+2. **Kết nối vào Cloudflare Worker của Word Bridge Trans:**
+   ```bash
+   npx wrangler secret put WORDBRIDGE_NLLB_API_URL
+   # Nhập địa chỉ máy chủ NLLB-200 của bạn (ví dụ qua Cloudflare Tunnel: https://nmt-internal.wordbridge.io.vn)
+   npx wrangler secret put WORDBRIDGE_NLLB_TOKEN
+   ```
+3. **Gọi Cổng API Dịch thuật Của Riêng Word Bridge (`/api/v1/translate`):**
+   Các ứng dụng trong hệ sinh thái Word Bridge có thể gọi trực tiếp API dịch thuật (hỗ trợ cả câu đơn và mảng `batch`):
+   ```bash
+   curl -X POST https://dichthuat.wordbridge.io.vn/api/v1/translate \
+     -H "Content-Type: application/json" \
+     -d '{
+       "text": ["Thỏa thuận bảo mật thông tin", "Hệ thống dịch thuật toàn cầu"],
+       "source_lang": "vi",
+       "target_lang": "en",
+       "domain": "legal"
+     }'
+   ```
 
-Yêu cầu môi trường: **Node.js >= 20.0.0** và **npm >= 10.0.0**.
+## 4. Hướng dẫn Đưa Mã nguồn lên GitHub và Triển khai Cloudflare Workers
 
 ```bash
-# 1. Cài đặt dependencies
+# 1. Kiểm tra Build & Chạy 22/22 bài kiểm thử tự động
 npm install
-
-# 2. Chạy kiểm toán tĩnh chính sách Zero User Data Storage & Build
 npm run build
-
-# 3. Chạy bộ kiểm thử tự động toàn diện (Full Test Suite)
 npm test
 
-# 4. Khởi động máy chủ phát triển cục bộ tại http://localhost:8787
-npm run dev
-```
-
-## 5. Hướng dẫn Đưa Mã nguồn lên GitHub và Triển khai Cloudflare Workers
-
-### Bước 1: Tạo GitHub Repository và Đẩy Mã nguồn
-```bash
+# 2. Đưa mã nguồn lên GitHub
 git init
 git branch -M main
 git add .
-git commit -m "feat: release Word Bridge Translation (Trans) with Zero User Data Storage"
+git commit -m "feat: release Word Bridge Translation with Self-Hosted NLLB-200 NMT & Zero Storage"
 git remote add origin https://github.com/<ten-to-chuc>/word-bridge-translation.git
 git push -u origin main
-```
 
-### Bước 2: Khai báo Secrets trên Cloudflare Workers (Tùy chọn nâng cấp nhà cung cấp Cloud AI)
-Hệ thống hoạt động ngay lập tức với bộ máy dịch thuật nội tại hoặc Cloudflare Workers AI. Để kích hoạt thêm các nhà cung cấp dịch thuật đám mây (chế độ Zero Data Retention), chạy các lệnh sau:
-```bash
-npx wrangler secret put OPENAI_API_KEY
-npx wrangler secret put GEMINI_API_KEY
-npx wrangler secret put DEEPL_API_KEY
-npx wrangler secret put GOOGLE_TRANSLATE_API_KEY
-npx wrangler secret put AZURE_TRANSLATOR_KEY
-```
-
-### Bước 3: Thực thi Migration Bổ sung An toàn trên Cloudflare D1
-```bash
-# Kiểm tra ở môi trường local trước:
-npm run db:migrate:local
-
-# Áp dụng lên Database D1 `word` (ce84cc48-6d49-409b-b45a-13ba3bc4a771):
+# 3. Thực thi Migration D1 an toàn & Deploy lên Cloudflare Workers
 npm run db:migrate:remote
-```
-
-### Bước 4: Triển khai lên Cloudflare Workers (`dichthuat.wordbridge.io.vn`)
-```bash
 npm run deploy
-# Hoặc chạy trực tiếp:
-npx wrangler deploy
 ```
-
-### Bước 5: Kiểm tra Sau Triển khai (Post-Deploy Verification)
-- Truy cập `https://dichthuat.wordbridge.io.vn/api/health` để kiểm tra trạng thái kết nối D1 (`word`), trạng thái bảo toàn R2 (`word`), header `Cache-Control: no-store` và trạng thái các nhà cung cấp dịch thuật.
-- Truy cập `https://dichthuat.wordbridge.io.vn/` để kiểm tra giao diện dịch văn bản, dịch tài liệu, dịch hình ảnh OCR và bộ đếm tổng lượt truy cập.

@@ -3,7 +3,7 @@
  * @description Kịch bản Kiểm toán Tĩnh & Build Dự án Word Bridge Translation.
  * Thực hiện:
  *   1. Kiểm tra sự tồn tại và tính toàn vẹn của tất cả các module mã nguồn.
- *   2. Kiểm tra cấu hình `wrangler.toml` (bảo toàn D1 `word` ce84cc48-6d49-409b-b45a-13ba3bc4a771 và R2 `word`).
+ *   2. Kiểm tra cấu hình `wrangler.toml` (bảo toàn D1 `word` ce84cc48-6d49-409b-b45a-13ba3bc4a771, R2 `word`, và bật sẵn `[ai] binding = "AI"`).
  *   3. Kiểm toán tĩnh chính sách ZERO USER DATA STORAGE trên toàn bộ mã nguồn.
  *   4. Kiểm tra không tồn tại API Key / Secrets bị hardcode trong mã nguồn.
  */
@@ -21,6 +21,7 @@ const REQUIRED_FILES = [
   ".env.example",
   "README.md",
   "migrations/0001_site_metrics_zero_storage.sql",
+  "scripts/build.js",
   "src/worker.js",
   "src/server.js",
   "src/api/router.js",
@@ -29,11 +30,15 @@ const REQUIRED_FILES = [
   "src/security/privacy-shield.js",
   "src/services/languages.js",
   "src/services/domains.js",
+  "src/services/nllb-connector.js",
   "src/services/translation-engine.js",
   "src/services/document-processor.js",
   "src/services/ocr-processor.js",
   "src/ui/assets.js",
   "src/ui/template.js",
+  "self-hosted-nmt/app.py",
+  "self-hosted-nmt/requirements.txt",
+  "self-hosted-nmt/Dockerfile",
   "tests/full-system.test.js"
 ];
 
@@ -41,7 +46,6 @@ function runBuildAndAudit() {
   console.log("=== [WORD BRIDGE TRANSLATION] BUILD & ZERO-STORAGE STATIC AUDIT ===");
   const errors = [];
 
-  // 1. Kiểm tra các file bắt buộc
   for (const relPath of REQUIRED_FILES) {
     const absPath = path.join(ROOT, relPath);
     if (!fs.existsSync(absPath)) {
@@ -49,7 +53,6 @@ function runBuildAndAudit() {
     }
   }
 
-  // 2. Kiểm tra cấu hình wrangler.toml
   const wranglerPath = path.join(ROOT, "wrangler.toml");
   if (fs.existsSync(wranglerPath)) {
     const wranglerContent = fs.readFileSync(wranglerPath, "utf-8");
@@ -65,9 +68,11 @@ function runBuildAndAudit() {
     if (!wranglerContent.includes('compatibility_flags = ["nodejs_compat"]')) {
       errors.push('wrangler.toml thiếu compatibility_flags = ["nodejs_compat"].');
     }
+    if (!/^\s*\[ai\]/m.test(wranglerContent) || !/^\s*binding\s*=\s*"AI"/m.test(wranglerContent)) {
+      errors.push('wrangler.toml chưa bật mặc định [ai] binding = "AI".');
+    }
   }
 
-  // 3. Kiểm toán tĩnh Zero User Data Storage trên mã nguồn Frontend & Backend
   const templatePath = path.join(ROOT, "src/ui/template.js");
   if (fs.existsSync(templatePath)) {
     const uiCode = fs.readFileSync(templatePath, "utf-8");
@@ -85,7 +90,6 @@ function runBuildAndAudit() {
     }
   }
 
-  // 4. Kiểm tra SQL migration không chứa lệnh phá hủy
   const migrationPath = path.join(ROOT, "migrations/0001_site_metrics_zero_storage.sql");
   if (fs.existsSync(migrationPath)) {
     const sqlCode = fs.readFileSync(migrationPath, "utf-8");
@@ -98,7 +102,6 @@ function runBuildAndAudit() {
     }
   }
 
-  // 5. Kiểm tra không có API Key thực tế bị lộ trong mã nguồn
   const secretPatterns = [
     /sk-[a-zA-Z0-9]{32,}/,
     /AIzaSy[a-zA-Z0-9_-]{33}/
@@ -122,10 +125,10 @@ function runBuildAndAudit() {
     process.exit(1);
   }
 
-  console.log(`  [✓] Đã xác minh ${REQUIRED_FILES.length}/${REQUIRED_FILES.length} tệp mã nguồn chuẩn ES Module.`);
+  console.log(`  [✓] Đã xác minh ${REQUIRED_FILES.length}/${REQUIRED_FILES.length} tệp mã nguồn.`);
+  console.log('  [✓] Đã xác minh bật mặc định [ai] binding = "AI" (@cf/meta/m2m100-1.2b) trong wrangler.toml.');
   console.log("  [✓] Đã xác minh bảo toàn Cloudflare D1 (word / ce84cc48-6d49-409b-b45a-13ba3bc4a771) và R2 (word).");
   console.log("  [✓] Đã xác minh tuân thủ tĩnh chính sách ZERO USER DATA STORAGE.");
-  console.log("  [✓] Đã xác minh không rò rỉ Secrets / API Keys trong mã nguồn.");
   console.log("=== BUILD & PRIVACY AUDIT HOÀN TẤT THÀNH CÔNG ===");
 }
 

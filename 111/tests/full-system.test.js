@@ -1,16 +1,15 @@
 /**
  * @file tests/full-system.test.js
  * @description Bộ Kiểm thử Tự động Toàn diện (FULL TEST SUITE) cho Dịch thuật Word Bridge.
- * Bao phủ đầy đủ 6 nhóm kiểm thử bắt buộc tại Phần XI:
+ * Bao phủ đầy đủ 6 nhóm kiểm thử bắt buộc tại Phần XI + Phương án 3 (NLLB-200 Microservice & API v1):
  *   1. Kiểm thử dịch văn bản (8+ cặp ngôn ngữ, văn bản ngắn/dài/có dấu/ký tự đặc biệt/nhiều đoạn/số/URL/đa ngôn ngữ/rỗng/quá dài/20 chuyên ngành).
  *   2. Kiểm thử dịch tài liệu thực tế (PDF, DOCX, DOC, TXT, PPTX, XLSX, CSV + tệp hỏng/quá lớn/mật khẩu/macro/sai MIME).
  *   3. Kiểm thử OCR hình ảnh (PNG, JPG/JPEG, WEBP + ảnh không có chữ + ảnh sai định dạng).
  *   4. Kiểm thử chính sách ZERO USER DATA STORAGE (D1, R2, Browser Storage, Cache-Control, Sanitized Logs).
  *   5. Kiểm thử bộ đếm lượt truy cập nguyên tử (trang chính, tải lại, truy cập đồng thời, không tăng cho API/assets/healthcheck).
- *   6. Kiểm thử kỹ thuật & bảo mật (SQL Firewall, R2 Guard, XSS Escaping, Endpoint lịch sử bị khóa).
+ *   6. Kiểm thử kỹ thuật, bảo mật & Cổng API Dịch thuật Tự chủ (NLLB-200 CTranslate2 INT8 + /api/v1/*).
  */
 
-import * as zlib from "node:zlib";
 import workerHandler from "../src/worker.js";
 import {
   EphemeralD1MetricsStore,
@@ -47,13 +46,14 @@ function assert(condition, message) {
   }
 }
 
-function createTestEnv(initialVisits = 0) {
+function createTestEnv(initialVisits = 0, extra = {}) {
   return {
     APP_NAME: "Dịch thuật Word Bridge",
     PUBLIC_DOMAIN: "https://dichthuat.wordbridge.io.vn",
     ZERO_USER_DATA_STORAGE: "true",
     DB: new EphemeralD1MetricsStore(initialVisits),
-    R2: { bucketName: "word" }
+    R2: { bucketName: "word" },
+    ...extra
   };
 }
 
@@ -66,13 +66,12 @@ async function callWorker(env, path, options = {}) {
   return workerHandler.fetch(req, env, {});
 }
 
-// Hàm tạo tệp PNG hợp lệ chứa chunk văn bản tEXt phục vụ kiểm thử OCR trên bộ nhớ
 function createSamplePngWithText(ocrText) {
   const signature = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   const ihdrData = new Uint8Array(13);
   const ihdrView = new DataView(ihdrData.buffer);
-  ihdrView.setUint32(0, 320, false); // width
-  ihdrView.setUint32(4, 120, false); // height
+  ihdrView.setUint32(0, 320, false);
+  ihdrView.setUint32(4, 120, false);
   ihdrData[8] = 8;
   ihdrData[9] = 2;
 
@@ -106,7 +105,6 @@ function createSamplePngWithText(ocrText) {
   return out;
 }
 
-// Hàm tạo tệp JPEG hợp lệ chứa segment comment COM (0xFF 0xFE)
 function createSampleJpegWithText(ocrText) {
   const commentBytes = new TextEncoder().encode(ocrText);
   const comLen = commentBytes.byteLength + 2;
@@ -116,9 +114,9 @@ function createSampleJpegWithText(ocrText) {
   const out = new Uint8Array(2 + 4 + commentBytes.byteLength + sof0.byteLength + 2);
   let p = 0;
   out[p++] = 0xff;
-  out[p++] = 0xd8; // SOI
+  out[p++] = 0xd8;
   out[p++] = 0xff;
-  out[p++] = 0xfe; // COM marker
+  out[p++] = 0xfe;
   out[p++] = (comLen >> 8) & 0xff;
   out[p++] = comLen & 0xff;
   out.set(commentBytes, p);
@@ -126,11 +124,10 @@ function createSampleJpegWithText(ocrText) {
   out.set(sof0, p);
   p += sof0.byteLength;
   out[p++] = 0xff;
-  out[p++] = 0xd9; // EOI
+  out[p++] = 0xd9;
   return out;
 }
 
-// Hàm tạo tệp WEBP hợp lệ
 function createSampleWebpWithText(ocrText) {
   const payload = new TextEncoder().encode(`VP8 '   \x00\x00\x01\x9d\x01\x2a\x40\x01\xf0\x00OCR_TEXT:${ocrText}\0`);
   const totalLen = 4 + payload.byteLength;
@@ -312,7 +309,6 @@ async function runAllTests() {
   });
 
   await runTest("1. Dịch văn bản", "Kiểm thử văn bản đa ngôn ngữ, văn bản rỗng và văn bản vượt quá giới hạn", async () => {
-    // Đa ngôn ngữ
     const multiRes = await callWorker(env, "/api/detect", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -321,7 +317,6 @@ async function runAllTests() {
     const multiData = await multiRes.json();
     assert(multiData.ok && multiData.detection.isMultilingual, "Phải phát hiện văn bản đa ngôn ngữ");
 
-    // Rỗng
     const emptyRes = await callWorker(env, "/api/translate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -330,7 +325,6 @@ async function runAllTests() {
     const emptyData = await emptyRes.json();
     assert(emptyRes.status === 400 && emptyData.code === "ERR_EMPTY_TEXT", "Phải từ chối văn bản rỗng");
 
-    // Quá dài (>15.000 ký tự)
     const hugeRes = await callWorker(env, "/api/translate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -403,7 +397,6 @@ async function runAllTests() {
   });
 
   await runTest("2. Dịch tài liệu", "Dịch tài liệu OOXML thực tế: DOCX, XLSX và PPTX", async () => {
-    // Tạo DOCX hợp lệ trong RAM
     const docxMap = new Map([
       ["[Content_Types].xml", new TextEncoder().encode('<?xml version="1.0"?><Types></Types>')],
       [
@@ -428,7 +421,6 @@ async function runAllTests() {
     assert(docxRes.status === 200 && docxData.ok && docxData.format === "docx", "Dịch DOCX phải thành công");
     assert(docxData.translatedPreview.toLowerCase().includes("hello world"), "DOCX phải dịch đúng văn bản");
 
-    // Tạo XLSX hợp lệ trong RAM
     const xlsxMap = new Map([
       ["[Content_Types].xml", new TextEncoder().encode('<?xml version="1.0"?><Types></Types>')],
       [
@@ -454,7 +446,6 @@ async function runAllTests() {
     assert(xlsxRes.status === 200 && xlsxData.ok && xlsxData.format === "xlsx", "Dịch XLSX phải thành công");
     assert(xlsxData.translatedPreview.toLowerCase().includes("balance sheet"), "XLSX phải dịch chuẩn thuật ngữ kế toán");
 
-    // Tạo PPTX hợp lệ trong RAM
     const pptxMap = new Map([
       ["[Content_Types].xml", new TextEncoder().encode('<?xml version="1.0"?><Types></Types>')],
       [
@@ -503,7 +494,6 @@ async function runAllTests() {
     assert(pdfRes.status === 200 && pdfData.ok && pdfData.format === "pdf", "Dịch PDF hợp lệ phải thành công");
     assert(pdfData.translatedPreview.includes("hệ thống dịch thuật"), "Nội dung PDF dịch sang tiếng Việt phải đúng");
 
-    // PDF có mật khẩu (/Encrypt)
     const encryptedPdf = new TextEncoder().encode(
       "%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Encrypt 2 0 R >>\nendobj\n%%EOF"
     );
@@ -523,7 +513,6 @@ async function runAllTests() {
   });
 
   await runTest("2. Dịch tài liệu", "Kiểm thử tệp hỏng, tệp chứa Macro, tệp giả mạo MIME và tệp thực thi", async () => {
-    // Tệp DOCX hỏng
     const corruptDocx = new TextEncoder().encode("NOT_A_VALID_ZIP_FILE");
     const corRes = await callWorker(env, "/api/document/translate", {
       method: "POST",
@@ -538,7 +527,6 @@ async function runAllTests() {
     const corData = await corRes.json();
     assert(corRes.status === 400 && corData.code === "ERR_CORRUPT_OOXML", "Phải chặn DOCX hỏng");
 
-    // Tệp chứa Macro (vbaProject.bin)
     const macroZip = buildZipArchive(
       new Map([
         ["word/document.xml", new TextEncoder().encode("<w:t>Hello</w:t>")],
@@ -558,7 +546,6 @@ async function runAllTests() {
     const macData = await macRes.json();
     assert(macRes.status === 400 && macData.code === "ERR_MACRO_NOT_ALLOWED", "Phải chặn tệp chứa Macro");
 
-    // Tệp thực thi giả mạo .txt (MZ header)
     const exeBytes = new Uint8Array([0x4d, 0x5a, 0x90, 0x00, 0x03, 0x00]);
     const exeRes = await callWorker(env, "/api/document/translate", {
       method: "POST",
@@ -668,7 +655,6 @@ async function runAllTests() {
       const beforeRes = await callWorker(env, "/api/metrics");
       const beforeMetrics = await beforeRes.json();
 
-      // Thực hiện dịch văn bản, dịch tài liệu và OCR
       await callWorker(env, "/api/translate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -682,13 +668,11 @@ async function runAllTests() {
       const afterRes = await callWorker(env, "/api/metrics");
       const afterMetrics = await afterRes.json();
 
-      // Số lượt truy cập trang không tăng khi gọi API dịch thuật
       assert(
         beforeMetrics.totalAccesses === afterMetrics.totalAccesses,
         "API dịch thuật không được làm thay đổi D1"
       );
 
-      // Kiểm tra tường lửa SQL chặn mọi câu lệnh lưu lịch sử hoặc DROP TABLE
       let sqlBlocked = false;
       try {
         validateZeroStorageSql("INSERT INTO translation_history (text) VALUES ('secret')");
@@ -705,7 +689,6 @@ async function runAllTests() {
       }
       assert(dropBlocked, "Tường lửa D1 phải chặn mọi lệnh DROP TABLE");
 
-      // Kiểm tra R2ZeroStorageGuard chặn mọi thao tác ghi/xóa trên bucket word
       const r2Guard = new R2ZeroStorageGuard({ bucketName: "word" });
       let r2PutBlocked = false;
       try {
@@ -715,13 +698,11 @@ async function runAllTests() {
       }
       assert(r2PutBlocked, "R2ZeroStorageGuard phải chặn tuyệt đối thao tác put()");
 
-      // Kiểm tra Header Cache-Control: no-store
       assert(
         afterRes.headers.get("Cache-Control").includes("no-store"),
         "Phản hồi API bắt buộc phải có Cache-Control: no-store"
       );
 
-      // Kiểm tra các endpoint lịch sử/lưu trữ bị khóa 403
       const histRes = await callWorker(env, "/api/history");
       assert(histRes.status === 403, "Endpoint /api/history phải bị khóa với mã 403");
 
@@ -739,7 +720,6 @@ async function runAllTests() {
       const m0 = await (await callWorker(env, "/api/metrics")).json();
       const baseCount = m0.totalAccesses;
 
-      // 1. Truy cập trang chính hợp lệ (GET / với Accept: text/html)
       const homeRes = await callWorker(env, "/", {
         method: "GET",
         headers: { Accept: "text/html", "User-Agent": "Mozilla/5.0 Chrome/130.0" }
@@ -748,7 +728,6 @@ async function runAllTests() {
       const m1 = await (await callWorker(env, "/api/metrics")).json();
       assert(m1.totalAccesses === baseCount + 1, "Truy cập trang chính phải tăng bộ đếm lên 1");
 
-      // 2. Truy cập đồng thời 10 lượt
       await Promise.all(
         Array.from({ length: 10 }, () =>
           callWorker(env, "/", {
@@ -760,7 +739,6 @@ async function runAllTests() {
       const m2 = await (await callWorker(env, "/api/metrics")).json();
       assert(m2.totalAccesses === baseCount + 11, "10 lượt truy cập đồng thời phải tăng đúng 10 đơn vị");
 
-      // 3. Request tài nguyên tĩnh, prefetch, healthcheck không được làm tăng bộ đếm
       await callWorker(env, "/assets/logo.jpg");
       await callWorker(env, "/favicon.ico");
       await callWorker(env, "/api/health");
@@ -779,7 +757,7 @@ async function runAllTests() {
   );
 
   // ---------------------------------------------------------------------------
-  // NHÓM 6: KIỂM THỬ KỸ THUẬT, GIAO DIỆN & BẢO MẬTHẠ TẦNG
+  // NHÓM 6: KIỂM THỬ KỸ THUẬT, BẢO MẬT & PHƯƠNG ÁN 3 (NLLB-200 + API v1)
   // ---------------------------------------------------------------------------
   await runTest(
     "6. Kỹ thuật & Bảo mật",
@@ -802,6 +780,80 @@ async function runAllTests() {
         "Phải có header Content-Security-Policy bảo vệ chống XSS"
       );
       return "Healthcheck, D1/R2 bindings, CSP headers và Provider Status hoạt động hoàn chỉnh";
+    }
+  );
+
+  await runTest(
+    "7. Phương án 3 (NLLB-200 & API v1)",
+    "Kiểm thử Microservice NLLB-200 CTranslate2 INT8 kết hợp Bộ từ điển 20 chuyên ngành",
+    async () => {
+      const nllbEnv = createTestEnv(100, {
+        NLLB_LOCAL_HANDLER: async (payload) => {
+          assert(payload.src_flores === "vie_Latn", "Mã nguồn FLORES-200 phải là vie_Latn");
+          assert(payload.tgt_flores === "eng_Latn", "Mã đích FLORES-200 phải là eng_Latn");
+          assert(
+            payload.text.includes("__WB_TERM_0__"),
+            "Phải bảo vệ thuật ngữ chuyên ngành bằng token trước khi đưa vào NLLB-200"
+          );
+          return {
+            translated_text: `Contract clause with ${payload.text}`
+          };
+        }
+      });
+
+      const res = await callWorker(nllbEnv, "/api/v1/translate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: "Thỏa thuận bảo mật thông tin",
+          source_lang: "vi",
+          target_lang: "en",
+          domain: "legal"
+        })
+      });
+      const data = await res.json();
+      assert(res.status === 200 && data.ok, "API v1/translate với NLLB-200 phải trả về 200 OK");
+      assert(
+        data.provider.id === "wordbridge_nllb200",
+        "Provider phải là wordbridge_nllb200"
+      );
+      assert(
+        data.translatedText.includes("non-disclosure agreement (NDA)"),
+        "Phải khôi phục chính xác thuật ngữ chuyên ngành sau khi dịch qua NLLB-200"
+      );
+      return `Đã xác minh luồng Pre-pass -> NLLB-200 (${data.sourceLanguage.flores200Code} -> ${data.targetLanguage.flores200Code}) -> Post-pass Glossary`;
+    }
+  );
+
+  await runTest(
+    "7. Phương án 3 (NLLB-200 & API v1)",
+    "Kiểm thử cổng Public API /api/v1/translate (dịch hàng loạt Batch Array), /api/v1/specs và /api/v1/languages",
+    async () => {
+      const specRes = await callWorker(env, "/api/v1/specs");
+      const specData = await specRes.json();
+      assert(specRes.status === 200 && specData.ok, "Endpoint /api/v1/specs phải hoạt động");
+
+      const batchRes = await callWorker(env, "/api/v1/translate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: ["Xin chào thế giới", "Không lưu trữ dữ liệu người dùng"],
+          source_lang: "vi",
+          target_lang: "en",
+          domain: "it"
+        })
+      });
+      const batchData = await batchRes.json();
+      assert(
+        batchRes.status === 200 && batchData.ok && batchData.batchCount === 2,
+        "Dịch batch array qua /api/v1/translate phải trả về đúng 2 kết quả"
+      );
+      assert(
+        batchData.translations[0].srcFlores200 === "vie_Latn" &&
+          batchData.translations[0].tgtFlores200 === "eng_Latn",
+        "Mỗi phần tử batch phải trả về mã chuẩn FLORES-200"
+      );
+      return "Cổng API /api/v1/specs, /api/v1/languages và Batch /api/v1/translate hoạt động hoàn hảo";
     }
   );
 
