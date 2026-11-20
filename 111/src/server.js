@@ -129,7 +129,10 @@ export function createTranslationServer(customEnv = {}) {
 export const createNodeTestServer = createTranslationServer;
 
 const isMainModule =
-  process.argv[1] && path.resolve(fileURLToPath(import.meta.url)) === path.resolve(process.argv[1]);
+  typeof import.meta?.url === "string" &&
+  import.meta.url.startsWith("file:") &&
+  process.argv[1] &&
+  path.resolve(fileURLToPath(import.meta.url)) === path.resolve(process.argv[1]);
 
 if (isMainModule) {
   const port = Number(process.env.PORT || 8787);
