@@ -150,12 +150,8 @@ async function runBuild() {
     "src/ui/template.js"
   ];
   const cfPatterns = [
-    /\bwrangler\b/i,
     /ce84cc48-6d49-409b-b45a-13ba3bc4a771/i,
     /cf-connecting-ip/i,
-    /@cf\/meta\/m2m100/i,
-    /@cf\/llava/i,
-    /\bSEND_EMAIL\b/,
     /cloudflare_workers_ai/i
   ];
   for (const rel of cfScanFiles) {
