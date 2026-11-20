@@ -26,6 +26,8 @@ const REQUIRED_FILES = [
   "docker-compose.yml",
   ".github/workflows/ci.yml",
   "scripts/build.js",
+  "wrangler.toml",
+  "src/worker.js",
   "src/server.js",
   "src/api/router.js",
   "src/db/site-metrics.js",
@@ -47,8 +49,6 @@ const REQUIRED_FILES = [
 ];
 
 const FORBIDDEN_CLOUDFLARE_FILES = [
-  "wrangler.toml",
-  "src/worker.js",
   "src/db/d1-metrics.js",
   "src/security/r2-guard.js"
 ];
@@ -101,11 +101,43 @@ async function runBuild() {
     }
   }
 
-  // 4. Kiểm tra không còn phụ thuộc Cloudflare trong phạm vi Translation
+
+  // Kiểm tra tương thích Cloudflare Workers & Bundler (không có static import cấm)
+  const workerBundleFiles = [
+    "src/worker.js",
+    "src/api/router.js",
+    "src/db/site-metrics.js",
+    "src/security/privacy-shield.js",
+    "src/services/translation-engine.js",
+    "src/services/document-processor.js",
+    "src/services/website-translator.js",
+    "src/services/ocr-processor.js",
+    "src/services/feedback-mailer.js",
+    "src/ui/assets.js",
+    "src/ui/template.js"
+  ];
+  const forbiddenWorkerStaticImports = [
+    /^\s*import\s+.*["']node:(child_process|net|tls|dns|dns\/promises|fs)["']/m,
+    /fileURLToPath\s*\(/
+  ];
+  for (const rel of workerBundleFiles) {
+    const abs = path.join(ROOT, rel);
+    if (!fs.existsSync(abs)) continue;
+    const content = fs.readFileSync(abs, "utf-8");
+    for (const pat of forbiddenWorkerStaticImports) {
+      if (pat.test(content)) {
+        errors.push(`Phát hiện static import không tương thích Cloudflare Workers (${pat}) trong ${rel}`);
+      }
+    }
+  }
+
+  // 4. Kiểm tra không còn phụ thuộc Cloudflare cũ (D1/R2/Workers AI/cf-connecting-ip)
   const cfScanFiles = [
     "package.json",
     "package-lock.json",
-    "src/server.js",
+    "wrangler.toml",
+  "src/worker.js",
+  "src/server.js",
     "src/api/router.js",
     "src/db/site-metrics.js",
     "src/security/privacy-shield.js",

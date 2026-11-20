@@ -8,7 +8,6 @@
  *   - Sanitized Logger: tuyệt đối không ghi nội dung dịch, email, URL hay buffer vào log.
  */
 
-import * as crypto from "node:crypto";
 
 export const NO_STORE_HEADERS = Object.freeze({
   "Cache-Control": "no-store, no-cache, must-revalidate, private, max-age=0",
@@ -56,7 +55,15 @@ export class EphemeralRateLimiter {
   }
 
   _anonymizeKey(rawKey) {
-    return crypto.createHash("sha256").update(String(rawKey || "anon")).digest("hex").slice(0, 16);
+    const s = String(rawKey || "anon");
+    let h1 = 0x811c9dc5, h2 = 0x01000193;
+    for (let i = 0; i < s.length; i++) {
+      h1 ^= s.charCodeAt(i);
+      h1 = Math.imul(h1, 0x01000193) >>> 0;
+      h2 ^= s.charCodeAt(i) + i;
+      h2 = Math.imul(h2, 0x85ebca6b) >>> 0;
+    }
+    return h1.toString(16).padStart(8, "0") + h2.toString(16).padStart(8, "0");
   }
 
   check(rawKey, customLimit = null) {

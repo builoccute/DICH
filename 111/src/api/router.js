@@ -262,7 +262,7 @@ export async function dispatchRequest(request, env = {}) {
         serverAlive: true,
         translationProvider: providerHealth,
         providersConfigured: providersSummary.configuredCount,
-        imageRecognitionEngines: getInstalledTesseractLanguages(),
+        imageRecognitionEngines: await getInstalledTesseractLanguages(),
         metricsStore: metricsStore.getStatus(),
         totalAccesses,
         zeroUserDataStorage: true,

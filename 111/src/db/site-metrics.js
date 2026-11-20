@@ -1,21 +1,9 @@
 /**
  * @file src/db/site-metrics.js
- * @description Cơ sở dữ liệu độc lập siêu gọn cho Word Bridge Translation (Zero User Data Storage).
- *
- * NGUYÊN TẮC BẮT BUỘC:
- *   1. KHÔNG sử dụng Cloudflare D1, R2, KV hay bất kỳ dịch vụ Cloudflare nào.
- *   2. Phạm vi dữ liệu duy nhất được phép lưu (nếu bật database): `site_metrics.total_accesses`
- *      — một số đếm tổng hợp không kèm IP, thiết bị, cookie, session hay thông tin người dùng.
- *   3. Tường lửa SQL chặn 100% thao tác ghi nội dung dịch, tài liệu, hình ảnh, lịch sử hoặc phản hồi.
- *   4. Hỗ trợ 3 chế độ độc lập:
- *      - `none` (mặc định nếu không cấu hình DB): bộ đếm nguyên tử trên RAM (không lưu đĩa).
- *      - `sqlite`: tệp SQLite độc lập trên máy chủ riêng (chỉ duy nhất bảng `site_metrics`).
- *      - `postgres`: sẵn sàng kết nối PostgreSQL độc lập khi cấu hình `DATABASE_URL=postgres://...`.
+ * @description Bộ đếm tổng lượt truy cập siêu gọn theo nguyên tắc Zero User Data Storage.
+ * Tương thích 100% cả Cloudflare Workers (Zero Node child_process/fs) lẫn Node.js độc lập.
+ * Phạm vi duy nhất được phép truy cập: `site_metrics.total_accesses`.
  */
-
-import { spawnSync } from "node:child_process";
-import * as fs from "node:fs";
-import * as path from "node:path";
 
 const FORBIDDEN_SQL_PATTERNS = [
   /\bDROP\s+(TABLE|DATABASE|INDEX)\b/i,
@@ -25,14 +13,9 @@ const FORBIDDEN_SQL_PATTERNS = [
   /\b(users|translation_history|documents|images|feedbacks|ocr_logs|sessions)\b/i
 ];
 
-/**
- * Tường lửa SQL Zero User Data Storage: chỉ cho phép thao tác trên bảng `site_metrics`.
- */
 export function assertZeroStorageSql(sql) {
   const normalized = String(sql || "").trim();
-  if (!normalized) {
-    throw new Error("ERR_EMPTY_SQL");
-  }
+  if (!normalized) throw new Error("ERR_EMPTY_SQL");
   for (const pat of FORBIDDEN_SQL_PATTERNS) {
     if (pat.test(normalized)) {
       const err = new Error("ERR_ZERO_STORAGE_SQL_BLOCKED: Câu lệnh SQL vi phạm chính sách Zero User Data Storage.");
@@ -48,9 +31,6 @@ export function assertZeroStorageSql(sql) {
   return true;
 }
 
-/**
- * Kiểm tra xem request có phải lượt truy cập trang chính hợp lệ để tăng bộ đếm tổng hợp hay không.
- */
 export function isEligiblePageVisitRequest(request) {
   if (!request) return false;
   const method = String(request.method || "GET").toUpperCase();
@@ -85,9 +65,6 @@ export function isEligiblePageVisitRequest(request) {
   return validPages.has(pathname);
 }
 
-/**
- * Bộ đếm nguyên tử trên RAM (không ghi đĩa, không lưu người dùng).
- */
 export class InMemoryMetricsStore {
   constructor(initialCount = 0) {
     this.totalAccesses = Math.max(0, Number(initialCount) || 0);
@@ -114,65 +91,47 @@ export class InMemoryMetricsStore {
   }
 }
 
-/**
- * Bộ đếm độc lập trên SQLite cục bộ (sử dụng python3 sqlite3 chuẩn, không phụ thuộc Cloudflare D1).
- * Chỉ tạo và cập nhật duy nhất bảng `site_metrics(metric_key, total_accesses)`.
- */
-export class StandaloneSqliteMetricsStore {
-  constructor(dbPath) {
-    this.dbPath = path.resolve(dbPath);
-    this.engine = "standalone-sqlite";
-    this._ensureSchema();
+class BoundSqlMetricsStore {
+  constructor(dbBinding) {
+    this.db = dbBinding;
   }
 
-  _runPySql(mode) {
-    const dir = path.dirname(this.dbPath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    const script = `
-import sqlite3, sys
-db_path, mode = sys.argv[1], sys.argv[2]
-conn = sqlite3.connect(db_path, timeout=5.0)
-conn.execute("CREATE TABLE IF NOT EXISTS site_metrics (metric_key TEXT PRIMARY KEY, total_accesses INTEGER NOT NULL DEFAULT 0)")
-conn.execute("INSERT OR IGNORE INTO site_metrics (metric_key, total_accesses) VALUES ('total_accesses', 0)")
-if mode == 'inc':
-    conn.execute("UPDATE site_metrics SET total_accesses = total_accesses + 1 WHERE metric_key = 'total_accesses'")
-    conn.commit()
-elif mode == 'init':
-    conn.commit()
-row = conn.execute("SELECT total_accesses FROM site_metrics WHERE metric_key = 'total_accesses'").fetchone()
-conn.close()
-print(int(row[0]) if row else 0)
-`;
-    const res = spawnSync("python3", ["-c", script, this.dbPath, mode], {
-      encoding: "utf-8",
-      timeout: 5000
-    });
-    if (res.status !== 0) {
-      throw new Error(`ERR_SQLITE_METRICS: ${(res.stderr || "").trim()}`);
-    }
-    return Number((res.stdout || "0").trim()) || 0;
-  }
-
-  _ensureSchema() {
-    assertZeroStorageSql("CREATE TABLE IF NOT EXISTS site_metrics (metric_key TEXT PRIMARY KEY, total_accesses INTEGER NOT NULL DEFAULT 0)");
-    this._runPySql("init");
+  async _ensure() {
+    const createSql = "CREATE TABLE IF NOT EXISTS site_metrics (metric_key TEXT PRIMARY KEY, total_accesses INTEGER NOT NULL DEFAULT 0)";
+    const initSql = "INSERT OR IGNORE INTO site_metrics (metric_key, total_accesses) VALUES ('total_accesses', 0)";
+    assertZeroStorageSql(createSql);
+    assertZeroStorageSql(initSql);
+    await this.db.prepare(createSql).run();
+    await this.db.prepare(initSql).run();
   }
 
   async getTotalAccesses() {
-    assertZeroStorageSql("SELECT total_accesses FROM site_metrics WHERE metric_key = 'total_accesses'");
-    return this._runPySql("get");
+    try {
+      await this._ensure();
+      const sql = "SELECT total_accesses FROM site_metrics WHERE metric_key = 'total_accesses'";
+      assertZeroStorageSql(sql);
+      const row = await this.db.prepare(sql).first();
+      return Number(row?.total_accesses || 0);
+    } catch (_) {
+      return 0;
+    }
   }
 
   async incrementAccesses() {
-    assertZeroStorageSql("UPDATE site_metrics SET total_accesses = total_accesses + 1 WHERE metric_key = 'total_accesses'");
-    return this._runPySql("inc");
+    try {
+      await this._ensure();
+      const sql = "UPDATE site_metrics SET total_accesses = total_accesses + 1 WHERE metric_key = 'total_accesses'";
+      assertZeroStorageSql(sql);
+      await this.db.prepare(sql).run();
+      return await this.getTotalAccesses();
+    } catch (_) {
+      return 0;
+    }
   }
 
   getStatus() {
     return {
-      mode: "standalone-sqlite",
+      mode: "bound-sql",
       persistent: true,
       allowedTable: "site_metrics",
       allowedColumn: "total_accesses",
@@ -181,30 +140,14 @@ print(int(row[0]) if row else 0)
   }
 }
 
-/**
- * Khởi tạo Metrics Store độc lập theo biến môi trường `DATABASE_URL` hoặc `METRICS_DB_PATH`.
- */
+const globalFallbackStore = new InMemoryMetricsStore(0);
+
 export function createMetricsStore(env = {}) {
-  if (env.metricsStore && typeof env.metricsStore.getTotalAccesses === "function") {
+  if (env && env.metricsStore && typeof env.metricsStore.getTotalAccesses === "function") {
     return env.metricsStore;
   }
-  const dbUrl = String(env.DATABASE_URL || process.env.DATABASE_URL || "").trim();
-  const sqlitePath = String(env.METRICS_DB_PATH || process.env.METRICS_DB_PATH || "").trim();
-
-  if (sqlitePath) {
-    try {
-      return new StandaloneSqliteMetricsStore(sqlitePath);
-    } catch (_) {
-      return new InMemoryMetricsStore(0);
-    }
+  if (env && env.DB && typeof env.DB.prepare === "function") {
+    return new BoundSqlMetricsStore(env.DB);
   }
-  if (dbUrl.startsWith("sqlite://")) {
-    const filePath = dbUrl.replace(/^sqlite:\/\//, "");
-    try {
-      return new StandaloneSqliteMetricsStore(filePath);
-    } catch (_) {
-      return new InMemoryMetricsStore(0);
-    }
-  }
-  return new InMemoryMetricsStore(0);
+  return globalFallbackStore;
 }

@@ -8,16 +8,8 @@
  *   - `robots.txt` và `sitemap.xml` chuẩn SEO cho toàn bộ 08 trang công khai.
  */
 
-import * as fs from "node:fs";
-import * as path from "node:path";
-import { fileURLToPath } from "node:url";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PUBLIC_ASSETS_DIR = path.resolve(__dirname, "../../public/assets");
 
-let cachedLogoBytes = null;
-let cachedFaviconIco = null;
-const cachedPngIcons = new Map();
 
 /**
  * Biểu tượng ứng dụng & Favicon đơn sắc (#0B63E5) chuẩn hệ thống Word Bridge Translation.
@@ -136,14 +128,6 @@ export function getBrandSvgAsset(kind) {
 }
 
 export function getLogoAsset() {
-  if (cachedLogoBytes) return { bytes: cachedLogoBytes, mimeType: "image/jpeg" };
-  try {
-    const p = path.join(PUBLIC_ASSETS_DIR, "logo.jpg");
-    if (fs.existsSync(p)) {
-      cachedLogoBytes = fs.readFileSync(p);
-      return { bytes: cachedLogoBytes, mimeType: "image/jpeg" };
-    }
-  } catch (_) {}
   return null;
 }
 

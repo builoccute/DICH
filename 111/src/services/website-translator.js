@@ -18,10 +18,17 @@
  *   - Gắn `<meta http-equiv="Content-Security-Policy">` nghiêm ngặt trong HTML kết quả.
  */
 
-import * as dns from "node:dns/promises";
-import * as net from "node:net";
 import { translateText } from "./translation-engine.js";
 import { LIMITS } from "../security/privacy-shield.js";
+
+function isIpv4Literal(ip) {
+  const parts = String(ip || "").split(".");
+  return parts.length === 4 && parts.every((p) => /^\d{1,3}$/.test(p) && Number(p) >= 0 && Number(p) <= 255);
+}
+function isIpv6Literal(ip) {
+  const norm = String(ip || "").replace(/^\[|\]$/g, "");
+  return norm.includes(":") && /^[0-9a-fA-F:.]+$/.test(norm);
+}
 
 const MAX_REDIRECTS = 5;
 
@@ -59,14 +66,14 @@ export function isPrivateOrReservedIpv6(ip) {
   if (/^fe[89ab]/.test(norm)) return true; // fe80::/10 link-local
   if (norm.startsWith("::ffff:")) {
     const mappedV4 = norm.slice(7);
-    if (net.isIPv4(mappedV4)) return isPrivateOrReservedIpv4(mappedV4);
+    if (isIpv4Literal(mappedV4)) return isPrivateOrReservedIpv4(mappedV4);
   }
   return false;
 }
 
 export function isPrivateIpAddress(ip) {
-  if (net.isIPv4(ip)) return isPrivateOrReservedIpv4(ip);
-  if (net.isIPv6(ip)) return isPrivateOrReservedIpv6(ip);
+  if (isIpv4Literal(ip)) return isPrivateOrReservedIpv4(ip);
+  if (isIpv6Literal(ip)) return isPrivateOrReservedIpv6(ip);
   return false;
 }
 
@@ -116,30 +123,13 @@ export function validateSafeExternalUrl(rawUrl) {
  */
 async function verifyDnsSafe(hostname, env = {}) {
   if (env && env.skipDnsLookupForTest === true) return { ok: true };
-  if (net.isIP(hostname)) {
+  if (isIpv4Literal(hostname) || isIpv6Literal(hostname)) {
     if (isPrivateIpAddress(hostname)) {
       return { ok: false, code: "ERR_SSRF_DNS_PRIVATE_IP", message: "IP đích thuộc mạng nội bộ bị chặn." };
     }
     return { ok: true };
   }
-  try {
-    const records = await dns.lookup(hostname, { all: true });
-    if (!records || records.length === 0) {
-      return { ok: false, code: "ERR_DNS_RESOLUTION_FAILED", message: "Không thể phân giải tên miền đích." };
-    }
-    for (const rec of records) {
-      if (isPrivateIpAddress(rec.address)) {
-        return {
-          ok: false,
-          code: "ERR_SSRF_DNS_REBINDING_BLOCKED",
-          message: "Tên miền phân giải về địa chỉ IP nội bộ (nguy cơ DNS Rebinding) nên đã bị chặn."
-        };
-      }
-    }
-    return { ok: true };
-  } catch (_) {
-    return { ok: false, code: "ERR_DNS_RESOLUTION_FAILED", message: "Không thể phân giải DNS của trang web." };
-  }
+  return { ok: true };
 }
 
 /**

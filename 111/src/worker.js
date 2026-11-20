@@ -1,8 +1,7 @@
 /**
  * @file src/worker.js
- * @description Điểm vào chính thức (ES Module Entrypoint) cho Cloudflare Workers
- * Dự án: Dịch thuật Word Bridge (https://dichthuat.wordbridge.io.vn)
- * Tương thích: Wrangler 4.x (`compatibility_flags = ["nodejs_compat"]`)
+ * @description Điểm vào ES Module tương thích Cloudflare Workers Builds (ES Module Fetch Handler)
+ * và chạy đồng nhất cùng bộ định tuyến `src/api/router.js`.
  */
 
 import { dispatchRequest } from "./api/router.js";
@@ -14,7 +13,7 @@ const workerHandler = {
       return await dispatchRequest(request, env, ctx);
     } catch (err) {
       sanitizedLog("ERROR", "UNHANDLED_WORKER_EXCEPTION", {
-        errorCode: err?.code || "ERR_INTERNAL"
+        code: err?.code || "ERR_INTERNAL"
       });
       return new Response(
         JSON.stringify({

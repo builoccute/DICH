@@ -9,14 +9,26 @@
  *   4. KHÔNG sử dụng Cloudflare Workers AI Vision và KHÔNG đọc metadata ảnh để giả lập nhận diện chữ.
  */
 
-import { spawnSync } from "node:child_process";
 import { translateText } from "./translation-engine.js";
 import { verifyFileSignature, wipeBuffer, LIMITS } from "../security/privacy-shield.js";
 
+async function getNodeSpawnSync() {
+  try {
+    if (typeof process === "undefined" || !process.versions?.node) return null;
+    const modName = "node:" + "child_process";
+    const mod = await import(/* @vite-ignore */ modName);
+    return typeof mod.spawnSync === "function" ? mod.spawnSync : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 let cachedTesseractLangs = null;
 
-export function getInstalledTesseractLanguages() {
+export async function getInstalledTesseractLanguages() {
   if (cachedTesseractLangs !== null) return cachedTesseractLangs;
+  const spawnSync = await getNodeSpawnSync();
+  if (!spawnSync) { cachedTesseractLangs = []; return cachedTesseractLangs; }
   const res = spawnSync("tesseract", ["--list-langs"], { encoding: "utf-8", timeout: 3000 });
   if (res.status !== 0) {
     cachedTesseractLangs = [];
@@ -52,8 +64,10 @@ function selectTesseractLangArg(sourceLang, installed) {
 /**
  * Chạy Tesseract nhận diện chữ thực tế trực tiếp qua RAM (stdin -> stdout).
  */
-export function runLocalTesseractInMemory(imageBytes, sourceLang = "auto") {
-  const installed = getInstalledTesseractLanguages();
+export async function runLocalTesseractInMemory(imageBytes, sourceLang = "auto") {
+  const installed = await getInstalledTesseractLanguages();
+  const spawnSync = await getNodeSpawnSync();
+  if (!spawnSync) return { ok: false, code: "ERR_IMAGE_RECOGNITION_ENGINE_MISSING", message: "Môi trường biên chưa cài Tesseract cục bộ." };
   const langArg = selectTesseractLangArg(sourceLang, installed);
   if (!langArg) {
     return {
@@ -102,7 +116,7 @@ export async function processImageOcrAndTranslate(inputBuffer, options = {}, env
       return { ok: false, status: 400, code: sig.code, message: sig.message, zeroUserDataStorage: true };
     }
 
-    const recognition = runLocalTesseractInMemory(workingBuffer, sourceLang);
+    const recognition = await runLocalTesseractInMemory(workingBuffer, sourceLang);
     if (!recognition.ok) {
       return {
         ok: false,

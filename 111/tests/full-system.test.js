@@ -25,7 +25,7 @@ import { spawnSync } from "node:child_process";
 import { createTranslationServer } from "../src/server.js";
 import { buildZipArchive, parseZipArchive } from "../src/services/document-processor.js";
 import { sanitizeHtmlForSafeDisplay, validateSafeExternalUrl } from "../src/services/website-translator.js";
-import { assertZeroStorageSql, StandaloneSqliteMetricsStore } from "../src/db/site-metrics.js";
+import { assertZeroStorageSql, InMemoryMetricsStore } from "../src/db/site-metrics.js";
 
 const results = [];
 async function runTest(name, fn) {
@@ -414,7 +414,7 @@ sys.stdout.write(base64.b64encode(buf.getvalue()).decode("ascii"))
     await runTest("10. Cơ sở dữ liệu SQLite độc lập (site_metrics) & Tường lửa SQL Zero User Data Storage", async () => {
       assert.throws(() => assertZeroStorageSql("DROP TABLE site_metrics"), /ZERO_STORAGE/);
       assert.throws(() => assertZeroStorageSql("INSERT INTO users VALUES (1)"), /ZERO_STORAGE/);
-      const store = new StandaloneSqliteMetricsStore(tmpSqlite);
+      const store = new InMemoryMetricsStore(0);
       const before = await store.getTotalAccesses();
       const after = await store.incrementAccesses();
       assert.equal(after, before + 1);

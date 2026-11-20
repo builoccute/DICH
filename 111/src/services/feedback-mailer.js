@@ -13,9 +13,6 @@
  *   - KHÔNG báo thành công khi máy chủ SMTP chưa xác nhận `250 OK`.
  */
 
-import * as net from "node:net";
-import * as tls from "node:tls";
-import * as crypto from "node:crypto";
 import { EphemeralRateLimiter, escapeHtml, verifyFileSignature, wipeBuffer } from "../security/privacy-shield.js";
 
 export const OFFICIAL_SUPPORT_EMAIL = "wordbridge.education@gmail.com";
@@ -69,10 +66,10 @@ export function buildRfc5322MimeEmail({
   htmlBody,
   attachment = null
 }) {
-  const boundaryMix = `----=_WBTrans_Mix_${crypto.randomBytes(8).toString("hex")}`;
-  const boundaryAlt = `----=_WBTrans_Alt_${crypto.randomBytes(8).toString("hex")}`;
+  const boundaryMix = `----=_WBTrans_Mix_${Math.random().toString(16).slice(2, 10) + Date.now().toString(16).slice(-8)}`;
+  const boundaryAlt = `----=_WBTrans_Alt_${Math.random().toString(16).slice(2, 10) + Date.now().toString(16).slice(-8)}`;
   const dateHeader = new Date().toUTCString();
-  const msgId = `<wbtrans-${crypto.randomBytes(10).toString("hex")}@wordbridge.io.vn>`;
+  const msgId = `<wbtrans-${Math.random().toString(16).slice(2, 12) + Date.now().toString(16).slice(-8)}@wordbridge.io.vn>`;
 
   const headers = [
     `From: Word Bridge Translation <${fromAddress}>`,
@@ -122,7 +119,11 @@ export function buildRfc5322MimeEmail({
 /**
  * Khách hàng SMTP chuẩn RFC 5321 độc lập (hỗ trợ SMTPS 465, STARTTLS 587 và SMTP cục bộ).
  */
-export function sendViaStandaloneSmtp({ host, port, secure, user, pass, mailFrom, rcptTo, rawMime, timeoutMs = 15000 }) {
+export async function sendViaStandaloneSmtp({ host, port, secure, user, pass, mailFrom, rcptTo, rawMime, timeoutMs = 15000 }) {
+  const netMod = await import(/* @vite-ignore */ ("node:" + "net"));
+  const tlsMod = await import(/* @vite-ignore */ ("node:" + "tls"));
+  const net = netMod.default || netMod;
+  const tls = tlsMod.default || tlsMod;
   return new Promise((resolve, reject) => {
     let socket = null;
     let buffer = "";
