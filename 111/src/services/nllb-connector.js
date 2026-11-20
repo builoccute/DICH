@@ -227,8 +227,9 @@ export async function translateViaSelfHostedNllb(text, sourceLang, targetLang, d
       headers.Authorization = `Bearer ${env.WORDBRIDGE_NLLB_TOKEN}`;
     }
 
+    const timeoutMs = Number(env.REQUEST_TIMEOUT || 18000);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 9000);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const res = await fetch(`${endpoint}/v1/nllb/translate`, {
         method: "POST",
@@ -242,17 +243,39 @@ export async function translateViaSelfHostedNllb(text, sourceLang, targetLang, d
         if (data && typeof data.translated_text === "string") {
           rawModelOutput = data.translated_text;
         }
+      } else {
+        return {
+          ok: false,
+          status: res.status === 401 ? 502 : res.status,
+          code: res.status === 503 ? "ERR_NLLB_MODEL_NOT_LOADED" : `ERR_NLLB_HTTP_${res.status}`,
+          message: res.status === 503
+            ? "Microservice dịch thuật NLLB-200 đang chạy nhưng chưa nạp xong trọng số mô hình."
+            : `Microservice dịch thuật NLLB-200 trả về lỗi HTTP ${res.status}.`
+        };
       }
     } catch (_) {
       clearTimeout(timer);
-      return null;
+      return {
+        ok: false,
+        status: 503,
+        code: "ERR_NLLB_UNREACHABLE",
+        message: "Không thể kết nối tới microservice dịch thuật NLLB-200 tự vận hành."
+      };
     }
   }
 
-  if (!rawModelOutput) return null;
+  if (!rawModelOutput) {
+    return {
+      ok: false,
+      status: 503,
+      code: "ERR_NLLB_EMPTY_RESPONSE",
+      message: "Microservice dịch thuật NLLB-200 không trả về bản dịch hợp lệ."
+    };
+  }
 
   const finalOutput = restoreDomainGlossaryPostPass(rawModelOutput, replacements);
   return {
+    ok: true,
     translatedText: finalOutput,
     providerUsed: "wordbridge_nllb200",
     providerName: "Word Bridge Self-Hosted NLLB-200 (CTranslate2 INT8 + Domain Glossary)",

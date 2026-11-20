@@ -1,64 +1,62 @@
 /**
  * @file src/api/router.js
- * @description Bộ định tuyến HTTP/Worker trung tâm của Dịch thuật Word Bridge (Trans).
- * Phục vụ:
- *   - 08 Giao diện chính theo đúng 08 ảnh thiết kế (`/`, `/dich-van-ban`, `/dich-tai-lieu`,
- *     `/dich-trang-web`, `/dich-hinh-anh`, `/gioi-thieu`, `/quyen-rieng-tu`, `/tro-giup`, `/phan-hoi`)
- *   - Hệ thống nhận diện thương hiệu & SEO (`/assets/*`, `/manifest.webmanifest`, `/robots.txt`, `/sitemap.xml`)
- *   - 04 Cơ chế dịch thuật: Văn bản (`/api/translate`), Tài liệu (`/api/document/translate`),
- *     Trang web chống SSRF (`/api/website/translate`), Hình ảnh OCR (`/api/ocr/translate`)
- *   - Hệ thống Gửi ý kiến phản hồi & Tự động gửi Email tới `wordbridge.education@gmail.com` (`/api/feedback`)
- *   - Cổng Public & Ecosystem Translation API v1 (`/api/v1/*`)
+ * @description Bộ định tuyến Độc lập cho Word Bridge Translation (https://dichthuat.wordbridge.io.vn).
+ *
+ * API CHÍNH THỨC (v1):
+ *   - GET  /api/v1/specs              Thông tin API & giới hạn hệ thống
+ *   - GET  /api/v1/languages          Danh sách ngôn ngữ được hỗ trợ
+ *   - GET  /api/v1/domains            Danh sách 20 lĩnh vực chuyên ngành
+ *   - POST /api/v1/detect             Nhận diện ngôn ngữ
+ *   - POST /api/v1/translate          Dịch văn bản
+ *   - POST /api/v1/translate/document Dịch tài liệu (PDF, DOCX, DOC, PPTX, XLSX, CSV, TXT)
+ *   - POST /api/v1/translate/website  Dịch trang web (chống SSRF & XSS)
+ *   - POST /api/v1/translate/image    Dịch hình ảnh (Tesseract RAM-piped)
+ *   - POST /api/v1/feedback           Gửi ý kiến phản hồi qua SMTP độc lập
+ *   - GET  /api/health                Kiểm tra sức khỏe hệ thống & nhà cung cấp dịch thuật
+ *
+ * 08 GIAO DIỆN CÔNG KHAI:
+ *   /, /dich-van-ban, /dich-tai-lieu, /dich-trang-web, /dich-hinh-anh,
+ *   /gioi-thieu, /quyen-rieng-tu, /tro-giup, /phan-hoi
  */
 
-import {
-  incrementTotalAccesses,
-  getTotalAccesses,
-  inspectD1Database,
-  isEligiblePageVisitRequest
-} from "../db/d1-metrics.js";
-import { inspectR2Preservation, createGuardedR2 } from "../security/r2-guard.js";
-import {
-  NO_STORE_HEADERS,
-  globalRateLimiter,
-  sanitizedLog,
-  wipeBuffer
-} from "../security/privacy-shield.js";
 import { GLOBAL_LANGUAGES, detectLanguage } from "../services/languages.js";
 import { SPECIALIZED_DOMAINS } from "../services/domains.js";
-import { toFlores200Code } from "../services/nllb-connector.js";
 import {
   translateText,
   getProvidersStatus,
-  analyzeTextStats,
-  applyTextUtilities
+  checkProviderHealth
 } from "../services/translation-engine.js";
 import { translateDocumentInMemory } from "../services/document-processor.js";
-import { processImageOcrAndTranslate } from "../services/ocr-processor.js";
 import { translateWebsiteUrl } from "../services/website-translator.js";
+import { processImageOcrAndTranslate, getInstalledTesseractLanguages } from "../services/ocr-processor.js";
 import {
   submitFeedbackAndSendEmail,
   FEEDBACK_TYPES,
   OFFICIAL_SUPPORT_EMAIL
 } from "../services/feedback-mailer.js";
 import {
+  createMetricsStore,
+  isEligiblePageVisitRequest
+} from "../db/site-metrics.js";
+import {
+  NO_STORE_HEADERS,
+  SECURITY_HEADERS,
+  LIMITS,
+  globalRateLimiter,
+  sanitizedLog
+} from "../security/privacy-shield.js";
+import {
   getLogoAsset,
-  WORD_BRIDGE_LOGO_SVG,
-  WORD_BRIDGE_ICON_SVG,
-  WORD_BRIDGE_OG_BANNER_SVG,
+  getBrandSvgAsset,
+  getFaviconIcoBytes,
+  getAppIconPngBytes,
   getWebManifestJson,
   getRobotsTxt,
   getSitemapXml
 } from "../ui/assets.js";
 import { renderTranslationAppHtml } from "../ui/template.js";
 
-const V1_CORS_HEADERS = Object.freeze({
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-WordBridge-Api-Key"
-});
-
-const ROUTE_TO_VIEW = Object.freeze({
+const PUBLIC_ROUTE_TO_VIEW = Object.freeze({
   "/": "text",
   "/dich-van-ban": "text",
   "/dich-tai-lieu": "document",
@@ -81,701 +79,389 @@ function jsonResponse(payload, status = 200, extraHeaders = {}) {
   });
 }
 
-function base64ToUint8Array(base64Str) {
-  const cleaned = String(base64Str || "").replace(/^data:[^;]+;base64,/, "").trim();
-  if (!cleaned) return new Uint8Array(0);
-  if (typeof Buffer !== "undefined") {
-    return new Uint8Array(Buffer.from(cleaned, "base64"));
-  }
-  const binary = atob(cleaned);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i) & 0xff;
-  }
-  return bytes;
+function getClientSignal(request) {
+  const xff = request.headers.get("x-forwarded-for");
+  if (xff) return xff.split(",")[0].trim();
+  const realIp = request.headers.get("x-real-ip");
+  if (realIp) return realIp.trim();
+  return request.headers.get("x-client-signal") || "local-client";
 }
 
-function verifyOptionalApiToken(request, env) {
-  const configuredToken = env?.WORDBRIDGE_API_TOKEN ? String(env.WORDBRIDGE_API_TOKEN).trim() : "";
-  if (!configuredToken) return { valid: true };
-
-  const headerKey = request.headers.get("X-WordBridge-Api-Key") || "";
-  const authHeader = (request.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "").trim();
-  if (headerKey === configuredToken || authHeader === configuredToken) {
-    return { valid: true };
+function buildCorsHeaders(request, env = {}) {
+  const origin = request.headers.get("origin");
+  if (!origin) return {};
+  const allowedOrigin = String(env.PUBLIC_DOMAIN || process.env.PUBLIC_DOMAIN || "https://dichthuat.wordbridge.io.vn").replace(/\/+$/, "");
+  const isLocal = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin);
+  if (origin === allowedOrigin || isLocal) {
+    return {
+      "Access-Control-Allow-Origin": origin,
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization",
+      "Vary": "Origin"
+    };
   }
-  return {
-    valid: false,
-    message: "Khóa xác thực X-WordBridge-Api-Key hoặc Bearer Token không hợp lệ."
-  };
+  return {};
+}
+
+async function parseJsonBody(request, maxBytes = LIMITS.MAX_DOCUMENT_BYTES * 1.45) {
+  const rawText = await request.text();
+  if (Buffer.byteLength(rawText, "utf-8") > maxBytes) {
+    const err = new Error("Dữ liệu yêu cầu vượt quá dung lượng cho phép.");
+    err.code = "ERR_PAYLOAD_TOO_LARGE";
+    err.status = 413;
+    throw err;
+  }
+  try {
+    return rawText ? JSON.parse(rawText) : {};
+  } catch (_) {
+    const err = new Error("Dữ liệu JSON không hợp lệ.");
+    err.code = "ERR_INVALID_JSON";
+    err.status = 400;
+    throw err;
+  }
 }
 
 export async function dispatchRequest(request, env = {}) {
-  const guardedR2 = createGuardedR2(env);
-  const url = new URL(request.url, "https://dichthuat.wordbridge.io.vn");
-  const method = (request.method || "GET").toUpperCase();
-  const pathname = url.pathname;
+  const url = new URL(request.url);
+  const pathname = url.pathname.replace(/\/+$/, "") || "/";
+  const method = String(request.method || "GET").toUpperCase();
+  const corsHeaders = buildCorsHeaders(request, env);
+  const metricsStore = createMetricsStore(env);
 
-  if (method === "OPTIONS" && pathname.startsWith("/api/v1/")) {
+  if (method === "OPTIONS") {
     return new Response(null, {
       status: 204,
-      headers: {
-        ...NO_STORE_HEADERS,
-        ...V1_CORS_HEADERS
-      }
+      headers: { ...NO_STORE_HEADERS, ...corsHeaders }
     });
   }
 
-  const rateStatus = globalRateLimiter.check(request);
-  if (!rateStatus.allowed) {
+  // 1. Tài nguyên thương hiệu, Favicon, PWA, SEO
+  if (method === "GET") {
+    if (pathname === "/favicon.ico") {
+      const ico = getFaviconIcoBytes();
+      return new Response(ico, {
+        status: 200,
+        headers: {
+          "Content-Type": "image/x-icon",
+          "Cache-Control": "public, max-age=86400",
+          "X-Content-Type-Options": "nosniff"
+        }
+      });
+    }
+
+    if (pathname === "/assets/favicon.svg") {
+      return new Response(getBrandSvgAsset("favicon"), {
+        status: 200,
+        headers: { "Content-Type": "image/svg+xml; charset=utf-8", "Cache-Control": "public, max-age=86400" }
+      });
+    }
+
+    if (pathname === "/assets/logo.jpg") {
+      const logo = getLogoAsset();
+      if (logo && logo.bytes) {
+        return new Response(logo.bytes, {
+          status: 200,
+          headers: { "Content-Type": logo.mimeType, "Cache-Control": "public, max-age=86400" }
+        });
+      }
+      return new Response(getBrandSvgAsset("logo-horizontal"), {
+        status: 200,
+        headers: { "Content-Type": "image/svg+xml; charset=utf-8", "Cache-Control": "public, max-age=86400" }
+      });
+    }
+
+    const svgAssetMap = {
+      "/assets/logo-horizontal.svg": "logo-horizontal",
+      "/assets/logo-vertical.svg": "logo-vertical",
+      "/assets/logo-icon.svg": "logo-icon",
+      "/assets/logo-light.svg": "logo-light",
+      "/assets/logo-dark.svg": "logo-dark",
+      "/assets/icon-192.svg": "app-icon",
+      "/assets/icon-512.svg": "app-icon",
+      "/assets/og-banner.svg": "og-banner"
+    };
+    if (svgAssetMap[pathname]) {
+      return new Response(getBrandSvgAsset(svgAssetMap[pathname]), {
+        status: 200,
+        headers: { "Content-Type": "image/svg+xml; charset=utf-8", "Cache-Control": "public, max-age=86400" }
+      });
+    }
+
+    if (pathname === "/assets/icon-192.png" || pathname === "/assets/icon-512.png") {
+      const size = pathname.includes("512") ? 512 : 192;
+      const pngBytes = getAppIconPngBytes(size);
+      if (pngBytes) {
+        return new Response(pngBytes, {
+          status: 200,
+          headers: { "Content-Type": "image/png", "Cache-Control": "public, max-age=86400" }
+        });
+      }
+      return new Response(getBrandSvgAsset("app-icon"), {
+        status: 200,
+        headers: { "Content-Type": "image/svg+xml; charset=utf-8", "Cache-Control": "public, max-age=86400" }
+      });
+    }
+
+    if (pathname === "/manifest.webmanifest") {
+      return new Response(getWebManifestJson(), {
+        status: 200,
+        headers: { "Content-Type": "application/manifest+json; charset=utf-8", "Cache-Control": "public, max-age=3600" }
+      });
+    }
+
+    if (pathname === "/robots.txt") {
+      return new Response(getRobotsTxt(), {
+        status: 200,
+        headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=3600" }
+      });
+    }
+
+    if (pathname === "/sitemap.xml") {
+      return new Response(getSitemapXml(), {
+        status: 200,
+        headers: { "Content-Type": "application/xml; charset=utf-8", "Cache-Control": "public, max-age=3600" }
+      });
+    }
+
+    // 2. Các trang giao diện công khai (8 giao diện)
+    if (pathname in PUBLIC_ROUTE_TO_VIEW) {
+      let totalAccesses = await metricsStore.getTotalAccesses();
+      if (isEligiblePageVisitRequest(request)) {
+        totalAccesses = await metricsStore.incrementAccesses();
+      }
+      const html = renderTranslationAppHtml({
+        initialView: PUBLIC_ROUTE_TO_VIEW[pathname],
+        pathname,
+        totalAccesses,
+        languages: GLOBAL_LANGUAGES,
+        domains: SPECIALIZED_DOMAINS,
+        feedbackTypes: FEEDBACK_TYPES
+      });
+      return new Response(html, {
+        status: 200,
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+          ...NO_STORE_HEADERS,
+          ...SECURITY_HEADERS
+        }
+      });
+    }
+  }
+
+  // 3. Health Check độc lập (không tăng bộ đếm truy cập)
+  if (pathname === "/api/health" && method === "GET") {
+    const providerHealth = await checkProviderHealth(env);
+    const providersSummary = getProvidersStatus(env);
+    const totalAccesses = await metricsStore.getTotalAccesses();
     return jsonResponse(
       {
-        ok: false,
-        code: "ERR_RATE_LIMIT_EXCEEDED",
-        message: "Bạn đã gửi quá nhiều yêu cầu trong thời gian ngắn. Vui lòng thử lại sau ít giây."
+        ok: true,
+        service: "Word Bridge Translation (TRANS)",
+        domain: String(env.PUBLIC_DOMAIN || process.env.PUBLIC_DOMAIN || "https://dichthuat.wordbridge.io.vn"),
+        architecture: "Independent Self-Hosted Node.js + FastAPI NMT Microservice",
+        serverAlive: true,
+        translationProvider: providerHealth,
+        providersConfigured: providersSummary.configuredCount,
+        imageRecognitionEngines: getInstalledTesseractLanguages(),
+        metricsStore: metricsStore.getStatus(),
+        totalAccesses,
+        zeroUserDataStorage: true,
+        timestamp: new Date().toISOString()
       },
-      429,
-      { "Retry-After": String(rateStatus.resetInSeconds) }
+      200,
+      corsHeaders
     );
   }
 
-  // 1. Hệ thống Nhận diện Thương hiệu, Favicon, PWA Manifest & SEO (KHÔNG tăng bộ đếm)
-  if (method === "GET" && (pathname === "/assets/logo.jpg" || pathname === "/logo.jpg")) {
-    const asset = getLogoAsset();
-    return new Response(asset.bytes, {
-      status: 200,
-      headers: {
-        "Content-Type": asset.contentType,
-        "Cache-Control": "public, max-age=3600",
-        "X-Content-Type-Options": "nosniff"
-      }
-    });
-  }
-
-  if (method === "GET" && pathname === "/assets/logo-horizontal.svg") {
-    return new Response(WORD_BRIDGE_LOGO_SVG, {
-      status: 200,
-      headers: { "Content-Type": "image/svg+xml; charset=utf-8", "Cache-Control": "public, max-age=3600" }
-    });
-  }
-
-  if (
-    method === "GET" &&
-    (pathname === "/assets/logo-icon.svg" ||
-      pathname === "/assets/favicon.svg" ||
-      pathname === "/assets/icon-192.svg" ||
-      pathname === "/assets/icon-512.svg" ||
-      pathname === "/favicon.ico")
-  ) {
-    return new Response(WORD_BRIDGE_ICON_SVG, {
-      status: 200,
-      headers: { "Content-Type": "image/svg+xml; charset=utf-8", "Cache-Control": "public, max-age=3600" }
-    });
-  }
-
-  if (method === "GET" && pathname === "/assets/og-banner.svg") {
-    return new Response(WORD_BRIDGE_OG_BANNER_SVG, {
-      status: 200,
-      headers: { "Content-Type": "image/svg+xml; charset=utf-8", "Cache-Control": "public, max-age=3600" }
-    });
-  }
-
-  if (method === "GET" && pathname === "/manifest.webmanifest") {
-    return new Response(JSON.stringify(getWebManifestJson(), null, 2), {
-      status: 200,
-      headers: { "Content-Type": "application/manifest+json; charset=utf-8", "Cache-Control": "public, max-age=3600" }
-    });
-  }
-
-  if (method === "GET" && pathname === "/robots.txt") {
-    return new Response(getRobotsTxt(), {
-      status: 200,
-      headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=3600" }
-    });
-  }
-
-  if (method === "GET" && pathname === "/sitemap.xml") {
-    return new Response(getSitemapXml(), {
-      status: 200,
-      headers: { "Content-Type": "application/xml; charset=utf-8", "Cache-Control": "public, max-age=3600" }
-    });
-  }
-
-  // 2. Phục vụ 08 Giao diện chính của Word Bridge Translation
-  if (method === "GET" && ROUTE_TO_VIEW[pathname]) {
-    let metrics;
-    if (pathname === "/" && isEligiblePageVisitRequest(request)) {
-      metrics = await incrementTotalAccesses(env);
-    } else {
-      metrics = await getTotalAccesses(env);
-    }
-    const providerStatus = getProvidersStatus(env);
-    const html = renderTranslationAppHtml({
-      initialView: ROUTE_TO_VIEW[pathname],
-      totalAccesses: metrics.totalAccesses,
-      providerStatus
-    });
-
-    return new Response(html, {
-      status: 200,
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        ...NO_STORE_HEADERS
-      }
-    });
-  }
-
-  // 3. Kiểm tra sức khỏe hệ thống & Bảo toàn hạ tầng Cloudflare (KHÔNG tăng bộ đếm)
-  if (method === "GET" && pathname === "/api/health") {
-    const d1Inspection = await inspectD1Database(env);
-    const r2Inspection = inspectR2Preservation(env);
-    const providers = getProvidersStatus(env);
-
-    return jsonResponse({
-      ok: true,
-      service: "Word Bridge Translation (Trans)",
-      domain: "https://dichthuat.wordbridge.io.vn",
-      ecosystem: "Word Bridge (wordbridge.io.vn)",
-      officialSupportEmail: OFFICIAL_SUPPORT_EMAIL,
-      zeroUserDataStorage: true,
-      uiScreensImplemented: Object.keys(ROUTE_TO_VIEW),
-      d1: d1Inspection,
-      r2: r2Inspection,
-      providers,
-      ownApiV1Endpoints: [
-        "GET /api/v1/specs",
-        "GET /api/v1/languages",
-        "POST /api/v1/detect",
-        "POST /api/v1/translate"
-      ],
-      forbiddenFeaturesDisabled: [
-        "translation_history",
-        "saved_translations",
-        "personal_document_vault",
-        "upload_download_history",
-        "personal_dictionary",
-        "user_ip_analytics",
-        "auto_save_drafts"
-      ]
-    });
-  }
-
-  // 4. API đọc bộ đếm lượt truy cập (KHÔNG tăng bộ đếm)
-  if (method === "GET" && pathname === "/api/metrics") {
-    const metrics = await getTotalAccesses(env);
-    return jsonResponse({
-      ok: true,
-      metric: "total_accesses",
-      totalAccesses: metrics.totalAccesses,
-      databaseName: metrics.databaseName,
-      databaseId: metrics.databaseId,
-      zeroUserDataVerified: true
-    });
-  }
-
-  // 5. API ghi nhận lượt truy cập trang chính hợp lệ
-  if (method === "POST" && pathname === "/api/metrics/visit") {
-    const metrics = await incrementTotalAccesses(env);
-    return jsonResponse({
-      ok: true,
-      metric: "total_accesses",
-      totalAccesses: metrics.totalAccesses
-    });
-  }
-
-  // 6. API danh sách 104 ngôn ngữ toàn cầu
-  if (method === "GET" && pathname === "/api/languages") {
-    return jsonResponse({
-      ok: true,
-      totalLanguages: GLOBAL_LANGUAGES.length - 1,
-      note: "Word Bridge Trans là hệ thống dịch thuật toàn cầu, không giới hạn trong 05 ngôn ngữ học tập của Word Bridge Learning.",
-      languages: GLOBAL_LANGUAGES.map((l) => ({
-        ...l,
-        flores200Code: l.code === "auto" ? "auto" : toFlores200Code(l.code)
-      }))
-    });
-  }
-
-  // 7. API danh sách 20 lĩnh vực chuyên ngành dịch thuật
-  if (method === "GET" && pathname === "/api/domains") {
-    return jsonResponse({
-      ok: true,
-      totalDomains: SPECIALIZED_DOMAINS.length,
-      domains: SPECIALIZED_DOMAINS.map((d) => ({
-        id: d.id,
-        order: d.order,
-        name: d.name,
-        nameEn: d.nameEn,
-        styleGuide: d.styleGuide
-      }))
-    });
-  }
-
-  // 8. API kiểm tra trạng thái cấu hình các nhà cung cấp dịch thuật
-  if (method === "GET" && pathname === "/api/providers/status") {
-    return jsonResponse({
-      ok: true,
-      ...getProvidersStatus(env)
-    });
-  }
-
-  // ===========================================================================
-  // CỔNG API DỊCH THUẬT ĐỘC LẬP CỦA WORD BRIDGE (/api/v1/*)
-  // ===========================================================================
+  // 4. API v1 công khai
   if (pathname.startsWith("/api/v1/")) {
-    const authCheck = verifyOptionalApiToken(request, env);
-    if (!authCheck.valid) {
-      return jsonResponse(
-        { ok: false, code: "ERR_UNAUTHORIZED_API_KEY", message: authCheck.message },
-        401,
-        V1_CORS_HEADERS
-      );
+    // Kiểm tra rate limit cho các endpoint POST
+    if (method === "POST") {
+      const rl = globalRateLimiter.check(getClientSignal(request));
+      if (!rl.allowed) {
+        return jsonResponse(
+          {
+            ok: false,
+            code: "ERR_RATE_LIMIT_EXCEEDED",
+            message: "Bạn gửi quá nhiều yêu cầu trong một phút. Vui lòng thử lại sau giây lát."
+          },
+          429,
+          corsHeaders
+        );
+      }
     }
 
-    if (method === "GET" && pathname === "/api/v1/specs") {
+    if (pathname === "/api/v1/specs" && method === "GET") {
       return jsonResponse(
         {
           ok: true,
-          apiName: "Word Bridge Global Translation API v1",
+          name: "Word Bridge Translation API",
           version: "1.0.0",
-          architecture:
-            "Option 3: Self-Hosted NLLB-200 Distilled 600M (CTranslate2 INT8) + Cloudflare Workers AI (@cf/meta/m2m100-1.2b) + 20 Specialized Domain Glossaries",
+          serviceCode: "TRANS",
+          publicDomain: "https://dichthuat.wordbridge.io.vn",
+          supportEmail: OFFICIAL_SUPPORT_EMAIL,
           zeroUserDataStorage: true,
-          endpoints: {
-            translate: {
-              method: "POST",
-              path: "/api/v1/translate",
-              acceptsBatchArray: true,
-              fields: ["text (string | string[])", "source_lang", "target_lang", "domain"]
-            },
-            detect: {
-              method: "POST",
-              path: "/api/v1/detect",
-              fields: ["text"]
-            },
-            languages: {
-              method: "GET",
-              path: "/api/v1/languages"
-            }
-          }
+          limits: {
+            maxTextLength: LIMITS.MAX_TEXT_LENGTH,
+            maxDocumentBytes: LIMITS.MAX_DOCUMENT_BYTES,
+            maxImageBytes: LIMITS.MAX_IMAGE_BYTES,
+            maxDocumentPages: LIMITS.MAX_DOCUMENT_PAGES,
+            requestTimeoutMs: LIMITS.REQUEST_TIMEOUT_MS
+          },
+          supportedDocumentFormats: ["pdf", "docx", "doc", "pptx", "xlsx", "csv", "txt"],
+          supportedImageFormats: ["jpg", "jpeg", "png", "webp"],
+          languagesCount: GLOBAL_LANGUAGES.length,
+          specializedDomainsCount: SPECIALIZED_DOMAINS.length,
+          endpoints: [
+            "GET /api/v1/specs",
+            "GET /api/v1/languages",
+            "GET /api/v1/domains",
+            "POST /api/v1/detect",
+            "POST /api/v1/translate",
+            "POST /api/v1/translate/document",
+            "POST /api/v1/translate/website",
+            "POST /api/v1/translate/image",
+            "POST /api/v1/feedback",
+            "GET /api/health"
+          ]
         },
         200,
-        V1_CORS_HEADERS
+        corsHeaders
       );
     }
 
-    if (method === "GET" && pathname === "/api/v1/languages") {
+    if (pathname === "/api/v1/languages" && method === "GET") {
       return jsonResponse(
         {
           ok: true,
-          totalLanguages: GLOBAL_LANGUAGES.length - 1,
-          languages: GLOBAL_LANGUAGES.filter((l) => l.code !== "auto").map((l) => ({
-            code: l.code,
-            flores200Code: toFlores200Code(l.code),
-            name: l.name,
-            nameEn: l.nameEn,
-            nativeName: l.nativeName,
-            dir: l.dir
+          total: GLOBAL_LANGUAGES.length,
+          languages: GLOBAL_LANGUAGES
+        },
+        200,
+        corsHeaders
+      );
+    }
+
+    if (pathname === "/api/v1/domains" && method === "GET") {
+      return jsonResponse(
+        {
+          ok: true,
+          total: SPECIALIZED_DOMAINS.length,
+          domains: SPECIALIZED_DOMAINS.map((d) => ({
+            id: d.id,
+            nameVi: d.nameVi,
+            nameEn: d.nameEn,
+            description: d.description
           }))
         },
         200,
-        V1_CORS_HEADERS
+        corsHeaders
       );
     }
 
-    if (method === "POST" && pathname === "/api/v1/detect") {
-      let body;
+    if (pathname === "/api/v1/detect" && method === "POST") {
       try {
-        body = await request.json();
-      } catch (_) {
-        return jsonResponse(
-          { ok: false, code: "ERR_INVALID_JSON", message: "Payload JSON không hợp lệ." },
-          400,
-          V1_CORS_HEADERS
-        );
+        const body = await parseJsonBody(request, 256 * 1024);
+        const text = String(body.text || "").trim();
+        if (!text) {
+          return jsonResponse({ ok: false, code: "ERR_EMPTY_TEXT", message: "Vui lòng cung cấp văn bản để nhận diện." }, 400, corsHeaders);
+        }
+        const detected = detectLanguage(text);
+        return jsonResponse({ ok: true, detected, zeroUserDataStorage: true }, 200, corsHeaders);
+      } catch (err) {
+        return jsonResponse({ ok: false, code: err.code || "ERR_BAD_REQUEST", message: err.message }, err.status || 400, corsHeaders);
       }
-      const det = detectLanguage(body?.text || "");
-      return jsonResponse(
-        {
-          ok: true,
-          language: det.code,
-          flores200Code: det.code === "und" ? "und" : toFlores200Code(det.code),
-          name: det.name,
-          confidence: det.confidence,
-          isMultilingual: det.isMultilingual,
-          secondaryLanguages: det.secondaryLanguages || [],
-          zeroUserDataStorage: true
-        },
-        200,
-        V1_CORS_HEADERS
-      );
     }
 
-    if (method === "POST" && pathname === "/api/v1/translate") {
-      let body;
+    if (pathname === "/api/v1/translate" && method === "POST") {
       try {
-        body = await request.json();
-      } catch (_) {
-        return jsonResponse(
-          { ok: false, code: "ERR_INVALID_JSON", message: "Payload JSON không hợp lệ." },
-          400,
-          V1_CORS_HEADERS
-        );
+        const body = await parseJsonBody(request, 512 * 1024);
+        const result = await translateText(body, env);
+        return jsonResponse(result, result.status || (result.ok ? 200 : 400), corsHeaders);
+      } catch (err) {
+        sanitizedLog("ERROR", "API_TRANSLATE_ERROR", { code: err.code || "ERR_TRANSLATE" });
+        return jsonResponse({ ok: false, code: err.code || "ERR_BAD_REQUEST", message: err.message }, err.status || 400, corsHeaders);
       }
+    }
 
-      const sourceLang = String(body?.source_lang || body?.sourceLang || "auto");
-      const targetLang = String(body?.target_lang || body?.targetLang || "en");
-      const domain = String(body?.domain || "general");
-      const input = body?.text ?? body?.q;
-
-      if (Array.isArray(input)) {
-        if (input.length === 0 || input.length > 50) {
-          return jsonResponse(
-            {
-              ok: false,
-              code: "ERR_INVALID_BATCH_SIZE",
-              message: "Mảng văn bản dịch hàng loạt (batch) phải từ 1 đến 50 phần tử."
-            },
-            400,
-            V1_CORS_HEADERS
-          );
+    if (pathname === "/api/v1/translate/document" && method === "POST") {
+      try {
+        const body = await parseJsonBody(request, Math.ceil(LIMITS.MAX_DOCUMENT_BYTES * 1.4));
+        if (!body.fileBase64 || !body.filename) {
+          return jsonResponse({ ok: false, code: "ERR_MISSING_FILE", message: "Vui lòng tải lên tệp tài liệu cần dịch." }, 400, corsHeaders);
         }
-
-        const translations = [];
-        for (const itemText of input) {
-          const singleRes = await translateText(
-            { text: String(itemText || ""), sourceLang, targetLang, domain },
-            env
-          );
-          if (!singleRes.ok) {
-            return jsonResponse(singleRes, 400, V1_CORS_HEADERS);
-          }
-          translations.push({
-            translatedText: singleRes.translatedText,
-            detectedSourceLanguage: singleRes.sourceLanguage.resolved,
-            srcFlores200: singleRes.sourceLanguage.flores200Code,
-            tgtFlores200: singleRes.targetLanguage.flores200Code
-          });
-        }
-
-        return jsonResponse(
+        const bytes = new Uint8Array(Buffer.from(String(body.fileBase64), "base64"));
+        const result = await translateDocumentInMemory(
+          bytes,
           {
-            ok: true,
-            batchCount: translations.length,
-            domain,
-            translations,
-            zeroUserDataStorage: true
+            filename: body.filename,
+            sourceLang: body.sourceLang || "auto",
+            targetLang: body.targetLang || "vi",
+            domain: body.domain || "general"
           },
-          200,
-          V1_CORS_HEADERS
+          env
         );
+        return jsonResponse(result, result.status || (result.ok ? 200 : 400), corsHeaders);
+      } catch (err) {
+        sanitizedLog("ERROR", "API_DOCUMENT_ERROR", { code: err.code || "ERR_DOCUMENT" });
+        return jsonResponse({ ok: false, code: err.code || "ERR_BAD_REQUEST", message: err.message }, err.status || 400, corsHeaders);
       }
+    }
 
-      const singleRes = await translateText(
-        { text: typeof input === "string" ? input : "", sourceLang, targetLang, domain },
-        env
-      );
-      if (!singleRes.ok) {
-        return jsonResponse(singleRes, 400, V1_CORS_HEADERS);
+    if (pathname === "/api/v1/translate/website" && method === "POST") {
+      try {
+        const body = await parseJsonBody(request, 64 * 1024);
+        const result = await translateWebsiteUrl(body, env);
+        return jsonResponse(result, result.status || (result.ok ? 200 : 400), corsHeaders);
+      } catch (err) {
+        sanitizedLog("ERROR", "API_WEBSITE_ERROR", { code: err.code || "ERR_WEBSITE" });
+        return jsonResponse({ ok: false, code: err.code || "ERR_BAD_REQUEST", message: err.message }, err.status || 400, corsHeaders);
       }
-      return jsonResponse(singleRes, 200, V1_CORS_HEADERS);
-    }
-  }
-
-  // 9. API nhận diện ngôn ngữ tự động
-  if (method === "POST" && pathname === "/api/detect") {
-    let body;
-    try {
-      body = await request.json();
-    } catch (_) {
-      return jsonResponse(
-        { ok: false, code: "ERR_INVALID_JSON", message: "Dữ liệu JSON không hợp lệ." },
-        400
-      );
-    }
-    const detection = detectLanguage(body?.text || "");
-    const stats = analyzeTextStats(body?.text || "");
-    return jsonResponse({
-      ok: true,
-      detection,
-      stats,
-      zeroUserDataStorage: true
-    });
-  }
-
-  // 10. API Cơ chế 1: Dịch văn bản trực tuyến & chuyên ngành
-  if (method === "POST" && pathname === "/api/translate") {
-    let body;
-    try {
-      body = await request.json();
-    } catch (_) {
-      return jsonResponse(
-        { ok: false, code: "ERR_INVALID_JSON", message: "Yêu cầu JSON không hợp lệ." },
-        400
-      );
     }
 
-    const result = await translateText(body, env);
-    if (!result.ok) {
-      sanitizedLog("WARN", "TRANSLATE_TEXT_REJECTED", { errorCode: result.code });
-      return jsonResponse(result, 400);
-    }
-
-    sanitizedLog("INFO", "TRANSLATE_TEXT_COMPLETED", {
-      provider: result.provider.id,
-      sourceLang: result.sourceLanguage.resolved,
-      targetLang: result.targetLanguage.code,
-      domain: result.domain.id,
-      durationMs: result.stats.durationMs
-    });
-
-    return jsonResponse(result, 200);
-  }
-
-  // 11. API công cụ tiện ích văn bản trong phiên
-  if (method === "POST" && pathname === "/api/tools/text") {
-    let body;
-    try {
-      body = await request.json();
-    } catch (_) {
-      return jsonResponse(
-        { ok: false, code: "ERR_INVALID_JSON", message: "Yêu cầu JSON không hợp lệ." },
-        400
-      );
-    }
-    const processed = applyTextUtilities(body?.text || "", {
-      cleanWhitespace: Boolean(body?.cleanWhitespace),
-      caseMode: body?.caseMode || ""
-    });
-    return jsonResponse({
-      ok: true,
-      processedText: processed,
-      stats: analyzeTextStats(processed),
-      zeroUserDataStorage: true
-    });
-  }
-
-  // 12. API Cơ chế 2: Dịch tài liệu trực tuyến trên bộ nhớ tạm (PDF, DOCX, DOC, PPTX, XLSX, CSV, TXT)
-  if (method === "POST" && pathname === "/api/document/translate") {
-    let fileBytes = null;
-    try {
-      const contentType = (request.headers.get("Content-Type") || "").toLowerCase();
-      let filename = "document.txt";
-      let sourceLang = "auto";
-      let targetLang = "vi";
-      let domain = "general";
-
-      if (contentType.includes("multipart/form-data")) {
-        const formData = await request.formData();
-        const file = formData.get("file");
-        if (!file || typeof file.arrayBuffer !== "function") {
-          return jsonResponse(
-            { ok: false, code: "ERR_MISSING_FILE", message: "Vui lòng đính kèm tệp tài liệu." },
-            400
-          );
+    if (pathname === "/api/v1/translate/image" && method === "POST") {
+      try {
+        const body = await parseJsonBody(request, Math.ceil(LIMITS.MAX_IMAGE_BYTES * 1.45));
+        if (!body.imageBase64) {
+          return jsonResponse({ ok: false, code: "ERR_MISSING_IMAGE", message: "Vui lòng tải lên tệp hình ảnh cần dịch." }, 400, corsHeaders);
         }
-        filename = file.name || "document.txt";
-        sourceLang = String(formData.get("sourceLang") || "auto");
-        targetLang = String(formData.get("targetLang") || "vi");
-        domain = String(formData.get("domain") || "general");
-        fileBytes = new Uint8Array(await file.arrayBuffer());
-      } else {
-        const body = await request.json();
-        filename = String(body?.filename || "document.txt");
-        sourceLang = String(body?.sourceLang || "auto");
-        targetLang = String(body?.targetLang || "vi");
-        domain = String(body?.domain || "general");
-        fileBytes = base64ToUint8Array(body?.base64Content || "");
+        const bytes = new Uint8Array(Buffer.from(String(body.imageBase64), "base64"));
+        const result = await processImageOcrAndTranslate(
+          bytes,
+          {
+            filename: body.filename || "image.png",
+            sourceLang: body.sourceLang || "auto",
+            targetLang: body.targetLang || "vi",
+            domain: body.domain || "general"
+          },
+          env
+        );
+        return jsonResponse(result, result.status || (result.ok ? 200 : 400), corsHeaders);
+      } catch (err) {
+        sanitizedLog("ERROR", "API_IMAGE_ERROR", { code: err.code || "ERR_IMAGE" });
+        return jsonResponse({ ok: false, code: err.code || "ERR_BAD_REQUEST", message: err.message }, err.status || 400, corsHeaders);
       }
+    }
 
-      const result = await translateDocumentInMemory(
-        fileBytes,
-        { filename, sourceLang, targetLang, domain },
-        env
-      );
-
-      if (!result.ok) {
-        sanitizedLog("WARN", "DOCUMENT_TRANSLATE_REJECTED", { errorCode: result.code });
-        return jsonResponse(result, 400);
+    if (pathname === "/api/v1/feedback" && method === "POST") {
+      try {
+        const body = await parseJsonBody(request, Math.ceil(12 * 1024 * 1024 * 1.4));
+        const result = await submitFeedbackAndSendEmail(body, env, getClientSignal(request));
+        return jsonResponse(result, result.status || (result.ok ? 200 : 400), corsHeaders);
+      } catch (err) {
+        sanitizedLog("ERROR", "API_FEEDBACK_ERROR", { code: err.code || "ERR_FEEDBACK" });
+        return jsonResponse({ ok: false, code: err.code || "ERR_BAD_REQUEST", message: err.message }, err.status || 400, corsHeaders);
       }
-
-      sanitizedLog("INFO", "DOCUMENT_TRANSLATE_COMPLETED", {
-        format: result.format,
-        durationMs: result.durationMs
-      });
-
-      return jsonResponse(result, 200);
-    } catch (_) {
-      return jsonResponse(
-        {
-          ok: false,
-          code: "ERR_DOCUMENT_PROCESSING_FAILED",
-          message: "Không thể xử lý tệp tài liệu. Vui lòng kiểm tra định dạng tệp."
-        },
-        400
-      );
-    } finally {
-      if (fileBytes) wipeBuffer(fileBytes);
     }
-  }
-
-  // 13. API Cơ chế 3: Dịch trang web trực tuyến kèm chống SSRF (/api/website/translate)
-  if (method === "POST" && pathname === "/api/website/translate") {
-    let body;
-    try {
-      body = await request.json();
-    } catch (_) {
-      return jsonResponse(
-        { ok: false, code: "ERR_INVALID_JSON", message: "Yêu cầu JSON không hợp lệ." },
-        400
-      );
-    }
-
-    const result = await translateWebsiteUrl(body, env);
-    if (!result.ok) {
-      sanitizedLog("WARN", "WEBSITE_TRANSLATE_REJECTED", { errorCode: result.code });
-      return jsonResponse(result, 400);
-    }
-
-    sanitizedLog("INFO", "WEBSITE_TRANSLATE_COMPLETED", {
-      sourceLang: result.sourceLanguage?.resolved,
-      targetLang: result.targetLanguage?.code,
-      durationMs: result.durationMs
-    });
-
-    return jsonResponse(result, 200);
-  }
-
-  // 14. API Cơ chế 4: Dịch hình ảnh & nhận diện OCR trên bộ nhớ tạm (JPG, JPEG, PNG, WEBP)
-  if (method === "POST" && pathname === "/api/ocr/translate") {
-    let imageBytes = null;
-    try {
-      const contentType = (request.headers.get("Content-Type") || "").toLowerCase();
-      let filename = "image.png";
-      let sourceLang = "auto";
-      let targetLang = "vi";
-      let domain = "general";
-      let clientExtractedText = "";
-
-      if (contentType.includes("multipart/form-data")) {
-        const formData = await request.formData();
-        const file = formData.get("file");
-        if (!file || typeof file.arrayBuffer !== "function") {
-          return jsonResponse(
-            { ok: false, code: "ERR_MISSING_IMAGE", message: "Vui lòng chọn tệp hình ảnh." },
-            400
-          );
-        }
-        filename = file.name || "image.png";
-        sourceLang = String(formData.get("sourceLang") || "auto");
-        targetLang = String(formData.get("targetLang") || "vi");
-        domain = String(formData.get("domain") || "general");
-        clientExtractedText = String(formData.get("clientExtractedText") || "");
-        imageBytes = new Uint8Array(await file.arrayBuffer());
-      } else {
-        const body = await request.json();
-        filename = String(body?.filename || "image.png");
-        sourceLang = String(body?.sourceLang || "auto");
-        targetLang = String(body?.targetLang || "vi");
-        domain = String(body?.domain || "general");
-        clientExtractedText = String(body?.clientExtractedText || "");
-        imageBytes = base64ToUint8Array(body?.base64Content || "");
-      }
-
-      const result = await processImageOcrAndTranslate(
-        imageBytes,
-        { filename, sourceLang, targetLang, domain, clientExtractedText },
-        env
-      );
-
-      if (!result.ok) {
-        sanitizedLog("WARN", "OCR_TRANSLATE_REJECTED", { errorCode: result.code });
-        return jsonResponse(result, 400);
-      }
-
-      sanitizedLog("INFO", "OCR_TRANSLATE_COMPLETED", {
-        format: result.format,
-        durationMs: result.durationMs
-      });
-
-      return jsonResponse(result, 200);
-    } catch (_) {
-      return jsonResponse(
-        {
-          ok: false,
-          code: "ERR_OCR_PROCESSING_FAILED",
-          message: "Không thể xử lý hình ảnh OCR. Vui lòng kiểm tra định dạng PNG/JPG/WEBP."
-        },
-        400
-      );
-    } finally {
-      if (imageBytes) wipeBuffer(imageBytes);
-    }
-  }
-
-  // 15. API Gửi ý kiến phản hồi & Tự động gửi Email tới wordbridge.education@gmail.com
-  if (method === "GET" && pathname === "/api/feedback/types") {
-    return jsonResponse({
-      ok: true,
-      officialSupportEmail: OFFICIAL_SUPPORT_EMAIL,
-      feedbackTypes: FEEDBACK_TYPES
-    });
-  }
-
-  if (method === "POST" && pathname === "/api/feedback") {
-    let body;
-    try {
-      body = await request.json();
-    } catch (_) {
-      return jsonResponse(
-        { ok: false, code: "ERR_INVALID_JSON", message: "Dữ liệu biểu mẫu phản hồi không hợp lệ." },
-        400
-      );
-    }
-
-    const clientSignal = (request.headers.get("cf-connecting-ip") || "anon-feedback").slice(0, 16);
-    const result = await submitFeedbackAndSendEmail(body, env, clientSignal);
-    if (!result.ok) {
-      const status =
-        result.code === "ERR_FEEDBACK_RATE_LIMITED"
-          ? 429
-          : result.code === "ERR_EMAIL_SERVICE_NOT_CONFIGURED" ||
-              result.code === "ERR_EMAIL_DELIVERY_FAILED"
-            ? 503
-            : 400;
-      return jsonResponse(result, status);
-    }
-
-    return jsonResponse(result, 200);
-  }
-
-  // 16. Chặn rõ ràng mọi endpoint lịch sử / lưu trữ nếu có truy vấn trái phép
-  if (
-    pathname.startsWith("/api/history") ||
-    pathname.startsWith("/api/saved") ||
-    pathname.startsWith("/api/r2") ||
-    pathname.startsWith("/api/dictionary/save")
-  ) {
-    try {
-      guardedR2.put();
-    } catch (_) {}
-    return jsonResponse(
-      {
-        ok: false,
-        code: "ERR_ZERO_DATA_STORAGE_POLICY",
-        message:
-          "Hệ thống Dịch thuật Word Bridge tuân thủ chính sách ZERO USER DATA STORAGE: Nghiêm cấm lưu lịch sử dịch thuật, bản dịch đã lưu, từ điển cá nhân hoặc tệp người dùng."
-      },
-      403
-    );
   }
 
   return jsonResponse(
     {
       ok: false,
       code: "ERR_NOT_FOUND",
-      message: "Không tìm thấy đường dẫn yêu cầu trên Dịch thuật Word Bridge."
+      message: "Đường dẫn API hoặc trang không tồn tại trên Word Bridge Translation."
     },
-    404
+    404,
+    corsHeaders
   );
 }

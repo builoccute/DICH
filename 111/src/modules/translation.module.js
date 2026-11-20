@@ -19,9 +19,9 @@ import {
  *
  * CHÍNH SÁCH ZERO USER DATA STORAGE:
  * - Tuyệt đối không lưu văn bản dịch, kết quả dịch, tệp tải lên, tệp đầu ra, kết quả OCR, metadata tệp hay lịch sử dịch.
- * - Chỉ sử dụng Cloudflare D1 (database "word", ID "ce84cc48-6d49-409b-b45a-13ba3bc4a771") cho duy nhất
+ * - Chỉ sử dụng cơ sở dữ liệu độc lập (PostgreSQL/SQLite) cho duy nhất
  *   bộ đếm nguyên tử tổng số lượt truy cập website (site_metrics.total_accesses).
- * - Bảo toàn tuyệt đối Cloudflare R2 (bucket "word"), không ghi bất kỳ tệp dịch thuật nào của người dùng lên R2.
+ * - Không sử dụng object storage cho dữ liệu dịch thuật người dùng.
  */
 export class TranslationModule {
   constructor(db, storageAdapter = null) {
@@ -62,7 +62,7 @@ export class TranslationModule {
     // Chặn các request nội bộ, healthcheck, bot tự động hoặc prefetch
     if (h['x-internal-request'] === '1' || h['x-health-check'] === '1') return false;
     if (h['purpose'] === 'prefetch' || h['sec-purpose'] === 'prefetch' || h['x-moz'] === 'prefetch') return false;
-    if (/kube-probe|cloudflare-healthcheck|uptime|pingdom|statuscake/i.test(h['user-agent'] || '')) return false;
+    if (/kube-probe|uptime|pingdom|statuscake/i.test(h['user-agent'] || '')) return false;
 
     if (isExplicitAccessEndpoint) {
       return method === 'POST' && cleanPath === '/api/trans/access';
@@ -78,7 +78,7 @@ export class TranslationModule {
   }
 
   /**
-   * Tăng bộ đếm tổng số lượt truy cập website một cách nguyên tử trên Cloudflare D1 (PHẦN III.1.3)
+   * Tăng bộ đếm tổng số lượt truy cập website một cách nguyên tử trên cơ sở dữ liệu độc lập (PHẦN III.1.3)
    * Không lưu địa chỉ IP, không lưu thời gian từng người, không lưu trình duyệt/thiết bị hay session.
    */
   recordValidPageAccess(reqMeta = {}) {

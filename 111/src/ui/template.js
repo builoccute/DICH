@@ -1,2424 +1,1155 @@
 /**
  * @file src/ui/template.js
- * @description Giao diện Người dùng Hoàn chỉnh (Full UI Implementation) cho Word Bridge Translation
- * Đối chiếu chính xác 100% với 08 hình ảnh thiết kế tham khảo đã thống nhất:
- *   1. Giao diện trang Dịch văn bản (image_42d121.jpg)
- *   2. Giao diện trang Dịch tài liệu (image_42d13d.jpg)
- *   3. Giao diện trang Dịch trang web (image_42d15f.jpg)
- *   4. Giao diện trang Dịch hình ảnh (image_42d17a.jpg)
- *   5. Giao diện Giới thiệu về Word Bridge Translation (image_442e5d.jpg)
- *   6. Giao diện Quyền riêng tư và Điều khoản (image_442e3d.jpg)
- *   7. Giao diện Trợ giúp - Trung tâm hỗ trợ (image_44444c.jpg)
- *   8. Giao diện Gửi ý kiến phản hồi tới wordbridge.education@gmail.com (image_449a5e.jpg)
+ * @description Giao diện Công khai 08 Màn hình Hoàn chỉnh cho Word Bridge Translation (TRANS).
  *
- * CAM KẾT ZERO USER DATA STORAGE:
- *   - Không sử dụng localStorage, sessionStorage, indexedDB, document.cookie hay Cache API để lưu dữ liệu dịch.
+ * TUÂN THỦ 100% CÁC TIÊU CHUẨN BẮT BUỘC:
+ *   - 08 giao diện hoàn chỉnh: Dịch văn bản, Dịch tài liệu, Dịch trang web, Dịch hình ảnh,
+ *     Giới thiệu, Quyền riêng tư và Điều khoản (1 trang, 5 mục, không sidebar),
+ *     Trợ giúp (1 trang, 6 nhóm + tìm kiếm + FAQ đóng/mở, không sidebar),
+ *     Gửi ý kiến phản hồi (8 loại phản hồi + đính kèm + gửi email SMTP thực tế).
+ *   - Thanh điều hướng duy nhất + Footer đồng bộ toàn website.
+ *   - 100% Icon SVG đơn sắc (#0B63E5) từ `src/ui/icons.js`, TUYỆT ĐỐI KHÔNG dùng emoji hay icon nhiều màu.
+ *   - KHÔNG hiển thị chữ viết tắt "OCR", "WEB" trong tên chức năng công khai.
+ *   - KHÔNG hiển thị Cloudflare, D1, R2, database ID hay tên máy chủ.
+ *   - KHÔNG dùng localStorage/sessionStorage/indexedDB/document.cookie/caches (Zero User Data Storage).
+ *   - SEO chuẩn theo từng trang (title, description, canonical, Open Graph riêng biệt).
  */
 
-import { GLOBAL_LANGUAGES } from "../services/languages.js";
-import { SPECIALIZED_DOMAINS } from "../services/domains.js";
-import { FEEDBACK_TYPES, OFFICIAL_SUPPORT_EMAIL } from "../services/feedback-mailer.js";
-import { WORD_BRIDGE_LOGO_SVG, FEATURE_ICONS_SVG } from "./assets.js";
+import { renderSvgIcon, LOGO_HORIZONTAL_LIGHT_SVG } from "./assets.js";
+import { escapeHtml } from "../security/privacy-shield.js";
 
-const VIEW_SEO_METADATA = Object.freeze({
+const PUBLIC_DOMAIN = "https://dichthuat.wordbridge.io.vn";
+
+const PAGE_SEO_META = Object.freeze({
   text: {
-    title: "Dịch văn bản – Dịch thuật Word Bridge (TRANS) | dichthuat.wordbridge.io.vn",
-    description: "Dịch văn bản trực tuyến nhanh chóng, chính xác giữa hơn 100 ngôn ngữ và 20 lĩnh vực chuyên ngành với chính sách Zero User Data Storage."
+    path: "/",
+    title: "Dịch văn bản — Dịch thuật Word Bridge (TRANS)",
+    description: "Dịch văn bản đa ngôn ngữ toàn cầu kèm 20 lĩnh vực chuyên ngành trên hạ tầng độc lập, không lưu dữ liệu người dùng."
   },
   document: {
-    title: "Dịch tài liệu (PDF, DOCX, PPTX, XLSX, CSV, TXT) – Dịch thuật Word Bridge",
-    description: "Tải tài liệu lên để dịch nhanh và chính xác, giữ nguyên bố cục, bảng biểu và định dạng trên bộ nhớ tạm."
+    path: "/dich-tai-lieu",
+    title: "Dịch tài liệu PDF, DOCX, XLSX, PPTX — Dịch thuật Word Bridge (TRANS)",
+    description: "Tải lên và dịch trực tiếp tài liệu PDF, DOCX, DOC, PPTX, XLSX, CSV, TXT hoàn toàn trên RAM với chính sách Zero User Data Storage."
   },
   website: {
-    title: "Dịch trang web trực tuyến – Dịch thuật Word Bridge (TRANS)",
-    description: "Dịch toàn bộ nội dung của một trang web sang ngôn ngữ bạn chọn, giữ nguyên bố cục và liên kết với bộ lọc chống SSRF."
+    path: "/dich-trang-web",
+    title: "Dịch trang web trực tuyến an toàn — Dịch thuật Word Bridge (TRANS)",
+    description: "Dịch nội dung trang web theo địa chỉ URL an toàn với cơ chế làm sạch HTML chống mã độc và bảo vệ quyền riêng tư."
   },
   image: {
-    title: "Dịch hình ảnh & Nhận diện OCR (JPG, PNG, WEBP) – Dịch thuật Word Bridge",
-    description: "Nhận diện văn bản trong ảnh và dịch sang hơn 100 ngôn ngữ, giữ nguyên bố cục nội dung."
+    path: "/dich-hinh-anh",
+    title: "Dịch hình ảnh sang đa ngôn ngữ — Dịch thuật Word Bridge (TRANS)",
+    description: "Tải ảnh JPG, JPEG, PNG, WEBP để nhận diện chữ trong hình ảnh và dịch sang nhiều ngôn ngữ trực tiếp trên bộ nhớ tạm."
   },
   about: {
-    title: "Giới thiệu về Word Bridge Translation – Hệ sinh thái Word Bridge",
-    description: "Word Bridge Translation là công cụ dịch thuật trực tuyến của Word Bridge, giúp bạn chuyển đổi ngôn ngữ nhanh chóng, chính xác và an toàn."
+    path: "/gioi-thieu",
+    title: "Giới thiệu — Dịch thuật Word Bridge (Word Bridge Translation)",
+    description: "Tìm hiểu về Dịch thuật Word Bridge (TRANS), định hướng dịch thuật toàn cầu, bốn chức năng chính và cam kết Zero User Data Storage."
   },
   privacy: {
-    title: "Quyền riêng tư và Điều khoản – Word Bridge Translation",
-    description: "Cam kết bảo vệ dữ liệu cá nhân, chính sách Zero User Data Storage, quyền lợi người dùng và quy định khi sử dụng Word Bridge Translation."
+    path: "/quyen-rieng-tu",
+    title: "Quyền riêng tư và Điều khoản — Dịch thuật Word Bridge (TRANS)",
+    description: "Chính sách quyền riêng tư, điều khoản sử dụng, chính sách cookie, quyền sở hữu trí tuệ và cập nhật chính sách của Word Bridge Translation."
   },
   help: {
-    title: "Trợ giúp & Trung tâm Hỗ trợ – Word Bridge Translation",
-    description: "Hướng dẫn sử dụng, xử lý sự cố, câu hỏi thường gặp (FAQ) và hỗ trợ người dùng Word Bridge Translation."
+    path: "/tro-giup",
+    title: "Trợ giúp & Câu hỏi thường gặp — Dịch thuật Word Bridge (TRANS)",
+    description: "Hướng dẫn sử dụng bốn công cụ dịch thuật, xử lý sự cố, bảo mật dữ liệu và giải đáp câu hỏi thường gặp."
   },
   feedback: {
-    title: "Gửi ý kiến phản hồi – Word Bridge Translation (wordbridge.education@gmail.com)",
-    description: "Chia sẻ ý kiến, góp ý hoặc báo cáo vấn đề kỹ thuật trực tiếp tới đội ngũ Word Bridge Translation."
+    path: "/phan-hoi",
+    title: "Gửi ý kiến phản hồi — Dịch thuật Word Bridge (TRANS)",
+    description: "Gửi báo lỗi kỹ thuật, góp ý chất lượng bản dịch, đề xuất ngôn ngữ hoặc yêu cầu hỗ trợ trực tiếp tới đội ngũ Word Bridge Translation."
   }
 });
 
 export function renderTranslationAppHtml({
   initialView = "text",
+  pathname = "/",
   totalAccesses = 0,
-  providerStatus = {}
+  languages = [],
+  domains = [],
+  feedbackTypes = []
 } = {}) {
-  const safeView = VIEW_SEO_METADATA[initialView] ? initialView : "text";
-  const seo = VIEW_SEO_METADATA[safeView];
-  const languagesJson = JSON.stringify(GLOBAL_LANGUAGES);
-  const domainsJson = JSON.stringify(SPECIALIZED_DOMAINS);
-  const feedbackTypesJson = JSON.stringify(FEEDBACK_TYPES);
+  const view = PAGE_SEO_META[initialView] ? initialView : "text";
+  const seo = PAGE_SEO_META[view];
+  const canonicalPath = pathname === "/dich-van-ban" ? "/dich-van-ban" : seo.path;
+  const canonicalUrl = `${PUBLIC_DOMAIN}${canonicalPath === "/" ? "" : canonicalPath}`;
+
+  const safeLanguagesJson = JSON.stringify(
+    languages.map((l) => ({ code: l.code, nameVi: l.nameVi, nativeName: l.nativeName, rtl: Boolean(l.rtl) }))
+  ).replace(/</g, "\\u003c");
+  const safeDomainsJson = JSON.stringify(
+    domains.map((d) => ({ id: d.id, nameVi: d.nameVi, nameEn: d.nameEn }))
+  ).replace(/</g, "\\u003c");
+
+  const feedbackOptionsHtml = feedbackTypes
+    .map((ft) => `<option value="${escapeHtml(ft.id)}">${escapeHtml(ft.label)}</option>`)
+    .join("");
+
+  const navItems = [
+    { id: "text", href: "/dich-van-ban", label: "Dịch văn bản", icon: "text" },
+    { id: "document", href: "/dich-tai-lieu", label: "Dịch tài liệu", icon: "document" },
+    { id: "website", href: "/dich-trang-web", label: "Dịch trang web", icon: "website" },
+    { id: "image", href: "/dich-hinh-anh", label: "Dịch hình ảnh", icon: "image" }
+  ];
+
+  const navHtml = navItems
+    .map(
+      (item) =>
+        `<a href="${item.href}" class="wb-nav-link${view === item.id ? " is-active" : ""}" data-view="${item.id}" aria-current="${view === item.id ? "page" : "false"}">${renderSvgIcon(item.icon, { size: 16 })}<span>${item.label}</span></a>`
+    )
+    .join("");
 
   return `<!DOCTYPE html>
 <html lang="vi">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>${seo.title}</title>
-  <meta name="description" content="${seo.description}" />
-  <meta name="robots" content="index, follow" />
-  <link rel="canonical" href="https://dichthuat.wordbridge.io.vn/" />
-  <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg" />
-  <link rel="manifest" href="/manifest.webmanifest" />
-  <meta property="og:type" content="website" />
-  <meta property="og:site_name" content="Dịch thuật Word Bridge (TRANS)" />
-  <meta property="og:title" content="${seo.title}" />
-  <meta property="og:description" content="${seo.description}" />
-  <meta property="og:url" content="https://dichthuat.wordbridge.io.vn/" />
-  <meta property="og:image" content="https://dichthuat.wordbridge.io.vn/assets/og-banner.svg" />
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeHtml(seo.title)}</title>
+  <meta name="description" content="${escapeHtml(seo.description)}">
+  <meta name="theme-color" content="#0B63E5">
+  <link rel="canonical" href="${escapeHtml(canonicalUrl)}">
+  <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+  <link rel="icon" type="image/x-icon" href="/favicon.ico">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Word Bridge Translation">
+  <meta property="og:title" content="${escapeHtml(seo.title)}">
+  <meta property="og:description" content="${escapeHtml(seo.description)}">
+  <meta property="og:url" content="${escapeHtml(canonicalUrl)}">
+  <meta property="og:image" content="${PUBLIC_DOMAIN}/assets/og-banner.svg">
   <style>
     :root {
-      --wb-blue: #0b63e5;
-      --wb-blue-dark: #084bb5;
-      --wb-blue-soft: #eef4ff;
-      --wb-blue-border: #bfdbfe;
-      --wb-teal: #084c59;
-      --wb-red: #d91c24;
-      --wb-bg-top: #f3f7fc;
-      --wb-bg-bottom: #e9f1fb;
-      --wb-surface: #ffffff;
-      --wb-border: #dce5f0;
-      --wb-text: #0f172a;
-      --wb-muted: #52637a;
-      --wb-radius-lg: 20px;
-      --wb-radius-md: 12px;
-      --wb-shadow: 0 10px 35px rgba(15, 23, 42, 0.06);
+      --wb-blue: #0B63E5;
+      --wb-blue-hover: #084EC0;
+      --wb-blue-soft: #EFF6FF;
+      --wb-blue-border: #BFDBFE;
+      --wb-bg: #F8FAFC;
+      --wb-surface: #FFFFFF;
+      --wb-text: #0F172A;
+      --wb-muted: #475569;
+      --wb-border: #E2E8F0;
+      --wb-danger: #B91C1C;
+      --wb-danger-bg: #FEF2F2;
+      --wb-success: #047857;
+      --wb-success-bg: #ECFDF5;
+      --wb-radius: 12px;
+      --wb-shadow: 0 1px 3px rgba(15, 23, 42, 0.06), 0 4px 14px rgba(15, 23, 42, 0.04);
     }
-
     *, *::before, *::after { box-sizing: border-box; }
-    html, body {
-      margin: 0;
-      padding: 0;
-      min-height: 100vh;
-      background: linear-gradient(180deg, var(--wb-bg-top) 0%, var(--wb-bg-bottom) 100%);
-      color: var(--wb-text);
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      font-size: 15px;
-      line-height: 1.5;
-      display: flex;
-      flex-direction: column;
-      -webkit-font-smoothing: antialiased;
-    }
+    html, body { margin: 0; padding: 0; font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: var(--wb-text); background: var(--wb-bg); line-height: 1.55; }
+    a { color: var(--wb-blue); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    button, input, select, textarea { font-family: inherit; font-size: 0.95rem; }
+    :focus-visible { outline: 2px solid var(--wb-blue); outline-offset: 2px; }
 
-    /* 1. THANH ĐIỀU HƯỚNG CHÍNH THỐNG NHẤT (ĐỐI CHIẾU 08 ẢNH THIẾT KẾ) */
-    .wb-navbar {
-      background: var(--wb-surface);
-      border-bottom: 1px solid var(--wb-border);
-      position: sticky;
-      top: 0;
-      z-index: 100;
-      box-shadow: 0 2px 12px rgba(15, 23, 42, 0.03);
-    }
-    .wb-navbar-inner {
-      max-width: 1340px;
-      margin: 0 auto;
-      padding: 0 22px;
-      min-height: 68px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 14px;
-      flex-wrap: wrap;
-    }
-    .wb-brand-group {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-      text-decoration: none;
-      color: inherit;
-    }
-    .wb-brand-logo {
-      height: 42px;
-      width: auto;
-      display: flex;
-      align-items: center;
-    }
-    .wb-brand-logo img {
-      height: 42px;
-      width: auto;
-      object-fit: contain;
-    }
-    .wb-brand-divider {
-      width: 1px;
-      height: 26px;
-      background: #cbd5e1;
-    }
-    .wb-brand-title-wrap {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .wb-brand-title {
-      font-size: 17px;
-      font-weight: 800;
-      color: #0f172a;
-      letter-spacing: -0.01em;
-    }
-    .wb-badge-trans {
-      background: var(--wb-red);
-      color: #ffffff;
-      font-size: 11px;
-      font-weight: 800;
-      padding: 3px 9px;
-      border-radius: 999px;
-      letter-spacing: 0.04em;
-    }
+    /* Monochrome SVG icon standard */
+    .wb-icon { color: var(--wb-blue); flex-shrink: 0; display: inline-block; vertical-align: middle; }
+    .wb-btn-primary .wb-icon, .wb-nav-link.is-active .wb-icon { color: #FFFFFF; }
+    .wb-btn-ghost:disabled .wb-icon, button:disabled .wb-icon { opacity: 0.45; }
 
-    .wb-nav-links {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      flex-wrap: wrap;
-    }
-    .wb-nav-item {
-      position: relative;
-      display: inline-flex;
-      align-items: center;
-      gap: 7px;
-      padding: 9px 14px;
-      border-radius: 10px;
-      border: none;
-      background: transparent;
-      color: #1e293b;
-      font-size: 14px;
-      font-weight: 600;
-      cursor: pointer;
-      text-decoration: none;
-      transition: all 0.16s ease;
-    }
-    .wb-nav-item:hover {
-      background: #f1f5f9;
-      color: var(--wb-blue);
-    }
-    .wb-nav-item.active {
-      background: var(--wb-blue-soft);
-      color: var(--wb-blue);
-      font-weight: 700;
-    }
-    .wb-nav-item.active::after {
-      content: "";
-      position: absolute;
-      left: 14px;
-      right: 14px;
-      bottom: -11px;
-      height: 3px;
-      border-radius: 3px 3px 0 0;
-      background: var(--wb-blue);
-    }
-    .wb-app-launcher {
-      width: 38px;
-      height: 38px;
-      border-radius: 10px;
-      border: 1px solid transparent;
-      background: transparent;
-      color: #334155;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      position: relative;
-    }
-    .wb-app-launcher:hover {
-      background: #f1f5f9;
-    }
-    .wb-launcher-menu {
-      position: absolute;
-      top: 48px;
-      right: 0;
-      width: 270px;
-      background: #ffffff;
-      border: 1px solid var(--wb-border);
-      border-radius: 14px;
-      box-shadow: 0 14px 32px rgba(15, 23, 42, 0.12);
-      padding: 12px;
-      display: none;
-      z-index: 200;
-      text-align: left;
-    }
-    .wb-launcher-menu.open {
-      display: block;
-    }
-    .wb-launcher-link {
-      display: flex;
-      flex-direction: column;
-      padding: 9px 11px;
-      border-radius: 9px;
-      text-decoration: none;
-      color: var(--wb-text);
-      font-size: 13px;
-    }
-    .wb-launcher-link:hover {
-      background: var(--wb-blue-soft);
-    }
+    /* Header & Single Nav */
+    .wb-header { background: var(--wb-surface); border-bottom: 1px solid var(--wb-border); position: sticky; top: 0; z-index: 40; }
+    .wb-header-inner { max-width: 1180px; margin: 0 auto; padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+    .wb-brand { display: inline-flex; align-items: center; gap: 10px; text-decoration: none; }
+    .wb-brand svg { height: 40px; width: auto; display: block; }
+    .wb-nav { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .wb-nav-link { display: inline-flex; align-items: center; gap: 8px; padding: 9px 14px; border-radius: 10px; font-weight: 600; font-size: 0.92rem; color: var(--wb-text); border: 1px solid transparent; transition: background 0.15s, border-color 0.15s; text-decoration: none; }
+    .wb-nav-link:hover { background: var(--wb-blue-soft); border-color: var(--wb-blue-border); text-decoration: none; }
+    .wb-nav-link.is-active { background: var(--wb-blue); color: #FFFFFF; border-color: var(--wb-blue); }
 
-    /* KHUNG NỘI DUNG CHÍNH */
-    .wb-page-container {
-      max-width: 1260px;
-      width: 100%;
-      margin: 26px auto 36px;
-      padding: 0 22px;
-      flex: 1;
-    }
-    .wb-view-section {
-      display: none;
-    }
-    .wb-view-section.active {
-      display: block;
-    }
+    /* Main Container */
+    .wb-main { max-width: 1180px; margin: 0 auto; padding: 24px 20px 48px; min-height: calc(100vh - 220px); }
+    .wb-view { display: none; }
+    .wb-view.is-active { display: block; }
+    .wb-card { background: var(--wb-surface); border: 1px solid var(--wb-border); border-radius: var(--wb-radius); box-shadow: var(--wb-shadow); padding: 22px; }
+    .wb-page-head { margin-bottom: 18px; }
+    .wb-page-head h1 { margin: 0 0 6px; font-size: 1.55rem; font-weight: 800; color: var(--wb-text); display: flex; align-items: center; gap: 10px; }
+    .wb-page-head p { margin: 0; color: var(--wb-muted); font-size: 0.96rem; }
 
-    /* CARD TRẮNG BO GÓC CHUẨN THIẾT KẾ */
-    .wb-main-card {
-      background: var(--wb-surface);
-      border: 1px solid var(--wb-border);
-      border-radius: var(--wb-radius-lg);
-      box-shadow: var(--wb-shadow);
-      padding: 26px 28px;
-    }
+    /* Controls & Toolbars */
+    .wb-toolbar { display: grid; grid-template-columns: 1fr auto 1fr 1fr; gap: 10px; align-items: end; margin-bottom: 16px; }
+    .wb-field { display: flex; flex-direction: column; gap: 6px; }
+    .wb-field label { font-size: 0.84rem; font-weight: 600; color: var(--wb-muted); display: inline-flex; align-items: center; gap: 6px; }
+    .wb-select, .wb-input, .wb-textarea { width: 100%; border: 1px solid var(--wb-border); border-radius: 10px; padding: 10px 12px; background: #FFFFFF; color: var(--wb-text); }
+    .wb-select:focus, .wb-input:focus, .wb-textarea:focus { border-color: var(--wb-blue); outline: none; box-shadow: 0 0 0 3px rgba(11, 99, 229, 0.14); }
 
-    /* THANH CHỌN NGÔN NGỮ CHUẨN (image_42d121.jpg) */
-    .wb-lang-row {
-      display: grid;
-      grid-template-columns: 1fr auto 1fr;
-      align-items: center;
-      gap: 16px;
-      margin-bottom: 18px;
-    }
-    .wb-select-box {
-      position: relative;
-      display: flex;
-      align-items: center;
-      background: #ffffff;
-      border: 1px solid #cbd5e1;
-      border-radius: 12px;
-      padding: 4px 12px;
-      min-height: 46px;
-      transition: border-color 0.15s, box-shadow 0.15s;
-    }
-    .wb-select-box:focus-within {
-      border-color: var(--wb-blue);
-      box-shadow: 0 0 0 3px rgba(11, 99, 229, 0.12);
-    }
-    .wb-select-icon {
-      font-size: 17px;
-      margin-right: 9px;
-      display: inline-flex;
-      align-items: center;
-      flex-shrink: 0;
-    }
-    .wb-select-native {
-      width: 100%;
-      border: none;
-      background: transparent;
-      font-family: inherit;
-      font-size: 15px;
-      font-weight: 700;
-      color: #0f172a;
-      outline: none;
-      cursor: pointer;
-    }
-    .wb-swap-circle {
-      width: 44px;
-      height: 44px;
-      border-radius: 50%;
-      border: 1px solid #cbd5e1;
-      background: #ffffff;
-      color: var(--wb-blue);
-      font-size: 19px;
-      font-weight: 700;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      box-shadow: 0 2px 6px rgba(15, 23, 42, 0.05);
-      transition: all 0.18s ease;
-    }
-    .wb-swap-circle:hover {
-      background: var(--wb-blue-soft);
-      border-color: var(--wb-blue);
-      transform: rotate(180deg);
-    }
+    /* Buttons */
+    .wb-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 10px 16px; border-radius: 10px; font-weight: 600; cursor: pointer; border: 1px solid var(--wb-border); background: #FFFFFF; color: var(--wb-text); transition: background 0.15s, border-color 0.15s; }
+    .wb-btn:hover:not(:disabled) { background: var(--wb-blue-soft); border-color: var(--wb-blue-border); }
+    .wb-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+    .wb-btn-primary { background: var(--wb-blue); color: #FFFFFF; border-color: var(--wb-blue); }
+    .wb-btn-primary:hover:not(:disabled) { background: var(--wb-blue-hover); border-color: var(--wb-blue-hover); }
+    .wb-btn-icon { padding: 8px 10px; }
 
-    /* KHUNG NHẬP & KHUNG KẾT QUẢ DỊCH VĂN BẢN (image_42d121.jpg) */
-    .wb-text-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 18px;
-    }
-    .wb-text-panel {
-      border: 1px solid #d5dfec;
-      border-radius: 16px;
-      padding: 16px 18px 12px;
-      display: flex;
-      flex-direction: column;
-      min-height: 270px;
-      background: #ffffff;
-    }
-    .wb-text-panel-target {
-      background: #f8fafd;
-    }
-    .wb-textarea {
-      width: 100%;
-      flex: 1;
-      border: none;
-      resize: none;
-      background: transparent;
-      font-family: inherit;
-      font-size: 16.5px;
-      line-height: 1.6;
-      color: #0f172a;
-      outline: none;
-    }
-    .wb-textarea::placeholder {
-      color: #64748b;
-    }
-    .wb-target-display {
-      width: 100%;
-      flex: 1;
-      font-size: 16.5px;
-      line-height: 1.6;
-      color: #0f172a;
-      white-space: pre-wrap;
-      overflow-wrap: break-word;
-    }
-    .wb-target-display.placeholder {
-      color: #64748b;
-    }
-    .wb-panel-bottom {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding-top: 10px;
-      margin-top: 8px;
-      color: #64748b;
-      font-size: 13.5px;
-    }
-    .wb-icon-action {
-      width: 34px;
-      height: 34px;
-      border-radius: 8px;
-      border: none;
-      background: transparent;
-      color: #334155;
-      font-size: 17px;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      transition: background 0.15s, color 0.15s;
-    }
-    .wb-icon-action:hover {
-      background: #e2e8f0;
-      color: var(--wb-blue);
-    }
+    /* Text Translation Dual Grid */
+    .wb-dual-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .wb-pane { border: 1px solid var(--wb-border); border-radius: var(--wb-radius); background: #FFFFFF; display: flex; flex-direction: column; min-height: 270px; }
+    .wb-pane-head { padding: 10px 14px; border-bottom: 1px solid var(--wb-border); display: flex; align-items: center; justify-content: space-between; font-size: 0.85rem; font-weight: 600; color: var(--wb-muted); }
+    .wb-pane textarea { flex: 1; border: none; resize: vertical; padding: 14px; min-height: 190px; font-size: 1rem; line-height: 1.6; background: transparent; color: var(--wb-text); }
+    .wb-pane textarea:focus { outline: none; }
+    .wb-output-box { flex: 1; padding: 14px; min-height: 190px; font-size: 1rem; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+    .wb-output-placeholder { color: #94A3B8; }
+    .wb-pane-foot { padding: 10px 14px; border-top: 1px solid var(--wb-border); display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; background: #FAFCFF; border-radius: 0 0 var(--wb-radius) var(--wb-radius); }
+    .wb-actions-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .wb-fullscreen { position: fixed; inset: 16px; z-index: 60; box-shadow: 0 20px 60px rgba(15, 23, 42, 0.25); }
 
-    /* NÚT HÀNH ĐỘNG CHÍNH MÀU XANH LAM (image_42d121 - image_449a5e) */
-    .wb-btn-center-row {
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      gap: 12px;
-      margin-top: 22px;
-      flex-wrap: wrap;
-    }
-    .wb-btn-primary {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 9px;
-      padding: 12px 38px;
-      min-width: 195px;
-      border-radius: 12px;
-      border: none;
-      background: linear-gradient(180deg, #166ef3 0%, #0952c6 100%);
-      color: #ffffff;
-      font-size: 16px;
-      font-weight: 700;
-      cursor: pointer;
-      box-shadow: 0 6px 18px rgba(11, 99, 229, 0.26);
-      transition: transform 0.12s, box-shadow 0.15s;
-      text-decoration: none;
-    }
-    .wb-btn-primary:hover {
-      background: linear-gradient(180deg, #0d61e0 0%, #0745a8 100%);
-      box-shadow: 0 8px 22px rgba(11, 99, 229, 0.34);
-    }
-    .wb-btn-outline {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-      padding: 11px 22px;
-      border-radius: 12px;
-      border: 1px solid #93c5fd;
-      background: #ffffff;
-      color: var(--wb-blue);
-      font-size: 14.5px;
-      font-weight: 700;
-      cursor: pointer;
-      text-decoration: none;
-      transition: background 0.15s;
-    }
-    .wb-btn-outline:hover {
-      background: var(--wb-blue-soft);
-    }
+    /* Dropzone */
+    .wb-dropzone { border: 2px dashed var(--wb-blue-border); border-radius: var(--wb-radius); padding: 28px 20px; text-align: center; background: var(--wb-blue-soft); cursor: pointer; transition: border-color 0.15s, background 0.15s; }
+    .wb-dropzone.is-drag { border-color: var(--wb-blue); background: #DBEAFE; }
+    .wb-dropzone p { margin: 8px 0 4px; font-weight: 600; color: var(--wb-text); }
+    .wb-dropzone small { color: var(--wb-muted); }
 
-    /* HEADER TIÊU ĐỀ TRONG CARD (DỊCH TÀI LIỆU / TRANG WEB / HÌNH ẢNH) */
-    .wb-section-head {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-      margin-bottom: 20px;
-    }
-    .wb-section-icon-box {
-      width: 52px;
-      height: 52px;
-      border-radius: 14px;
-      background: var(--wb-blue-soft);
-      color: var(--wb-blue);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex-shrink: 0;
-    }
-    .wb-section-head h2 {
-      margin: 0 0 3px 0;
-      font-size: 23px;
-      font-weight: 800;
-      color: #0f172a;
-    }
-    .wb-section-head p {
-      margin: 0;
-      font-size: 14.5px;
-      color: var(--wb-muted);
-    }
+    /* Status & Alerts */
+    .wb-status { margin-top: 14px; padding: 12px 14px; border-radius: 10px; font-size: 0.92rem; display: none; align-items: flex-start; gap: 10px; border: 1px solid var(--wb-border); background: var(--wb-blue-soft); }
+    .wb-status.is-visible { display: flex; }
+    .wb-status.is-error { background: var(--wb-danger-bg); border-color: #FECACA; color: var(--wb-danger); }
+    .wb-status.is-success { background: var(--wb-success-bg); border-color: #A7F3D0; color: var(--wb-success); }
+    .wb-notice { margin-top: 12px; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--wb-blue-border); background: var(--wb-blue-soft); font-size: 0.9rem; color: var(--wb-text); display: flex; gap: 10px; align-items: flex-start; }
 
-    /* KHUNG KÉO THẢ TÀI LIỆU & HÌNH ẢNH (image_42d13d.jpg & image_42d17a.jpg) */
-    .wb-dropzone-box {
-      border: 1.5px dashed #7ab3ef;
-      border-radius: 16px;
-      background: #f8fbff;
-      padding: 36px 24px;
-      text-align: center;
-      cursor: pointer;
-      transition: all 0.18s ease;
-    }
-    .wb-dropzone-box:hover, .wb-dropzone-box.dragover {
-      background: #eef6ff;
-      border-color: var(--wb-blue);
-    }
-    .wb-dropzone-title {
-      font-size: 17px;
-      font-weight: 800;
-      color: #0f172a;
-      margin: 12px 0 6px;
-    }
-    .wb-dropzone-sub {
-      font-size: 13.5px;
-      color: #64748b;
-      margin-bottom: 16px;
-    }
-    .wb-controls-3col {
-      display: grid;
-      grid-template-columns: 1fr auto 1fr 1fr;
-      align-items: end;
-      gap: 14px;
-      margin-top: 20px;
-    }
-    .wb-field-label {
-      display: block;
-      font-size: 13.5px;
-      font-weight: 700;
-      color: #1e293b;
-      margin-bottom: 7px;
-    }
-    .wb-info-note-bar {
-      margin-top: 20px;
-      background: #eff6ff;
-      border: 1px solid #dbeafe;
-      border-radius: 11px;
-      padding: 11px 16px;
-      font-size: 13.5px;
-      color: #1e3a8a;
-      display: flex;
-      align-items: center;
-      gap: 9px;
-    }
+    /* Preview Iframe & Image */
+    .wb-web-frame { width: 100%; height: 520px; border: 1px solid var(--wb-border); border-radius: var(--wb-radius); background: #FFFFFF; margin-top: 14px; }
+    .wb-img-preview { max-width: 100%; max-height: 260px; border-radius: 10px; border: 1px solid var(--wb-border); margin-top: 12px; display: none; object-fit: contain; }
 
-    /* DỊCH TRANG WEB URL BAR (image_42d15f.jpg) */
-    .wb-url-input-wrap {
-      display: flex;
-      align-items: center;
-      background: #ffffff;
-      border: 1px solid #cbd5e1;
-      border-radius: 14px;
-      padding: 6px 14px;
-      min-height: 54px;
-      margin-bottom: 18px;
-    }
-    .wb-url-input-wrap:focus-within {
-      border-color: var(--wb-blue);
-      box-shadow: 0 0 0 3px rgba(11, 99, 229, 0.12);
-    }
-    .wb-url-input {
-      width: 100%;
-      border: none;
-      outline: none;
-      font-size: 15.5px;
-      color: #0f172a;
-      padding: 0 10px;
-      background: transparent;
-    }
+    /* About / Privacy / Help Sections */
+    .wb-grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin: 18px 0; }
+    .wb-grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 18px 0; }
+    .wb-grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; margin: 18px 0; }
+    .wb-feature-card { border: 1px solid var(--wb-border); border-radius: var(--wb-radius); padding: 18px; background: #FFFFFF; }
+    .wb-feature-card h3 { margin: 10px 0 6px; font-size: 1.02rem; }
+    .wb-feature-card p { margin: 0; font-size: 0.9rem; color: var(--wb-muted); }
 
-    /* DỊCH HÌNH ẢNH 2 CỘT (image_42d17a.jpg) */
-    .wb-image-split {
-      display: grid;
-      grid-template-columns: 1.75fr 1fr;
-      gap: 24px;
-      align-items: center;
-    }
-    .wb-image-side-card {
-      padding: 16px 18px;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-    }
-    .wb-check-list {
-      list-style: none;
-      padding: 0;
-      margin: 14px 0 0 0;
-      width: 100%;
-    }
-    .wb-check-list li {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      font-size: 14px;
-      font-weight: 600;
-      color: #1e293b;
-      margin-bottom: 9px;
-    }
-    .wb-green-tick {
-      width: 20px;
-      height: 20px;
-      border-radius: 50%;
-      background: #22c55e;
-      color: #ffffff;
-      font-size: 12px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      flex-shrink: 0;
-    }
+    .wb-policy-section { border: 1px solid var(--wb-border); border-radius: var(--wb-radius); padding: 20px; background: #FFFFFF; margin-bottom: 14px; }
+    .wb-policy-section h2 { margin: 0 0 8px; font-size: 1.15rem; color: var(--wb-blue); display: flex; align-items: center; gap: 8px; }
+    .wb-policy-section p, .wb-policy-section li { color: var(--wb-text); font-size: 0.94rem; }
 
-    /* GIAO DIỆN 5: GIỚI THIỆU (image_442e5d.jpg) */
-    .wb-hero-banner {
-      display: grid;
-      grid-template-columns: 1.25fr 1fr;
-      gap: 28px;
-      align-items: center;
-      margin-bottom: 28px;
-    }
-    .wb-pill-tag {
-      display: inline-block;
-      background: #dbeafe;
-      color: #1d4ed8;
-      font-size: 13px;
-      font-weight: 700;
-      padding: 5px 14px;
-      border-radius: 999px;
-      margin-bottom: 12px;
-    }
-    .wb-hero-title {
-      font-size: 34px;
-      font-weight: 900;
-      color: #0f172a;
-      margin: 0 0 12px 0;
-      letter-spacing: -0.02em;
-    }
-    .wb-hero-desc {
-      font-size: 16px;
-      color: #334155;
-      line-height: 1.65;
-      margin: 0 0 20px 0;
-    }
-    .wb-feature-4grid {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 16px;
-      margin: 16px 0 32px;
-    }
-    .wb-pastel-card {
-      border-radius: 16px;
-      padding: 20px 18px;
-      border: 1px solid rgba(15, 23, 42, 0.06);
-      cursor: pointer;
-      transition: transform 0.16s, box-shadow 0.16s;
-    }
-    .wb-pastel-card:hover {
-      transform: translateY(-3px);
-      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
-    }
-    .wb-pastel-blue { background: #edf4ff; }
-    .wb-pastel-green { background: #eafaf1; }
-    .wb-pastel-purple { background: #f3f0ff; }
-    .wb-pastel-amber { background: #fff8eb; }
-    .wb-why-5grid {
-      display: grid;
-      grid-template-columns: repeat(5, 1fr);
-      gap: 14px;
-      margin-top: 16px;
-      background: #ffffff;
-      border: 1px solid var(--wb-border);
-      border-radius: 16px;
-      padding: 20px;
-    }
-    .wb-why-item {
-      padding: 4px 12px;
-      border-right: 1px solid #e2e8f0;
-    }
-    .wb-why-item:last-child {
-      border-right: none;
-    }
+    .wb-faq-item { border: 1px solid var(--wb-border); border-radius: 10px; background: #FFFFFF; margin-bottom: 10px; overflow: hidden; }
+    .wb-faq-btn { width: 100%; text-align: left; padding: 14px 16px; background: transparent; border: none; font-weight: 600; color: var(--wb-text); display: flex; align-items: center; justify-content: space-between; cursor: pointer; }
+    .wb-faq-body { display: none; padding: 0 16px 14px; color: var(--wb-muted); font-size: 0.93rem; border-top: 1px solid var(--wb-border); padding-top: 12px; }
+    .wb-faq-item.is-open .wb-faq-body { display: block; }
 
-    /* GIAO DIỆN 6: QUYỀN RIÊNG TƯ & ĐIỀU KHOẢN (image_442e3d.jpg) */
-    .wb-accordion-list {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-    }
-    .wb-accordion-item {
-      background: #ffffff;
-      border: 1px solid #e2e8f0;
-      border-radius: 14px;
-      overflow: hidden;
-    }
-    .wb-accordion-header {
-      width: 100%;
-      padding: 16px 20px;
-      border: none;
-      background: #ffffff;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 16px;
-      cursor: pointer;
-      text-align: left;
-    }
-    .wb-accordion-header:hover {
-      background: #f8fafc;
-    }
-    .wb-acc-left {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-    }
-    .wb-acc-icon {
-      width: 44px;
-      height: 44px;
-      border-radius: 12px;
-      background: var(--wb-blue-soft);
-      color: var(--wb-blue);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 20px;
-      flex-shrink: 0;
-    }
-    .wb-accordion-body {
-      display: none;
-      padding: 0 20px 18px 78px;
-      font-size: 14.5px;
-      color: #334155;
-      line-height: 1.65;
-      border-top: 1px dashed #e2e8f0;
-    }
-    .wb-accordion-item.open .wb-accordion-body {
-      display: block;
-      padding-top: 14px;
-    }
+    /* Feedback Form */
+    .wb-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .wb-hp { position: absolute; left: -9999px; opacity: 0; pointer-events: none; }
 
-    /* GIAO DIỆN 7: TRỢ GIÚP (image_44444c.jpg) */
-    .wb-help-search-bar {
-      display: flex;
-      align-items: center;
-      background: #ffffff;
-      border: 1px solid #cbd5e1;
-      border-radius: 999px;
-      padding: 6px 8px 6px 18px;
-      max-width: 620px;
-      box-shadow: 0 4px 14px rgba(15, 23, 42, 0.05);
-    }
-    .wb-help-search-bar input {
-      flex: 1;
-      border: none;
-      outline: none;
-      font-size: 15px;
-      background: transparent;
-    }
-    .wb-help-bottom-grid {
-      display: grid;
-      grid-template-columns: 1.25fr 1fr;
-      gap: 20px;
-      margin-top: 22px;
-    }
+    /* Footer */
+    .wb-footer { background: var(--wb-surface); border-top: 1px solid var(--wb-border); padding: 28px 20px; margin-top: 32px; }
+    .wb-footer-inner { max-width: 1180px; margin: 0 auto; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 18px; }
+    .wb-footer-brand { display: flex; flex-direction: column; gap: 6px; }
+    .wb-footer-brand svg { height: 34px; width: auto; }
+    .wb-footer-links { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; }
+    .wb-footer-links a { display: inline-flex; align-items: center; gap: 6px; font-size: 0.9rem; font-weight: 600; color: var(--wb-text); }
+    .wb-footer-links a:hover { color: var(--wb-blue); }
+    .wb-footer-meta { max-width: 1180px; margin: 16px auto 0; padding-top: 14px; border-top: 1px solid var(--wb-border); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; font-size: 0.84rem; color: var(--wb-muted); }
 
-    /* GIAO DIỆN 8: GỬI Ý KIẾN PHẢN HỒI (image_449a5e.jpg) */
-    .wb-feedback-grid {
-      display: grid;
-      grid-template-columns: 1.45fr 1fr;
-      gap: 22px;
-      align-items: start;
+    /* Responsive */
+    @media (max-width: 920px) {
+      .wb-toolbar { grid-template-columns: 1fr 1fr; }
+      .wb-dual-grid, .wb-grid-4, .wb-grid-3, .wb-grid-2, .wb-form-grid { grid-template-columns: 1fr; }
     }
-    .wb-form-input {
-      width: 100%;
-      padding: 12px 14px;
-      border-radius: 11px;
-      border: 1px solid #cbd5e1;
-      font-family: inherit;
-      font-size: 14.5px;
-      color: #0f172a;
-      outline: none;
-      background: #ffffff;
-    }
-    .wb-form-input:focus {
-      border-color: var(--wb-blue);
-      box-shadow: 0 0 0 3px rgba(11, 99, 229, 0.12);
-    }
-
-    /* KHU VỰC HIỂN THỊ THÔNG BÁO & KẾT QUẢ */
-    .wb-toast {
-      margin-top: 16px;
-      padding: 13px 18px;
-      border-radius: 12px;
-      font-size: 14px;
-      font-weight: 600;
-      display: none;
-    }
-    .wb-toast.show { display: block; }
-    .wb-toast-error { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
-    .wb-toast-success { background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; }
-    .wb-toast-info { background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; }
-
-    /* FOOTER THỐNG NHẤT TOÀN TRANG (ĐỐI CHIẾU 08 ẢNH) */
-    .wb-footer {
-      background: var(--wb-surface);
-      border-top: 1px solid var(--wb-border);
-      margin-top: auto;
-    }
-    .wb-footer-inner {
-      max-width: 1340px;
-      margin: 0 auto;
-      padding: 14px 22px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 16px;
-      flex-wrap: wrap;
-    }
-    .wb-footer-links {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-    .wb-footer-link {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 7px 13px;
-      border-radius: 9px;
-      border: none;
-      background: transparent;
-      color: #334155;
-      font-size: 13.5px;
-      font-weight: 600;
-      cursor: pointer;
-      text-decoration: none;
-    }
-    .wb-footer-link:hover, .wb-footer-link.active {
-      background: var(--wb-blue-soft);
-      color: var(--wb-blue);
-    }
-
-    @media (max-width: 980px) {
-      .wb-text-grid,
-      .wb-controls-3col,
-      .wb-image-split,
-      .wb-hero-banner,
-      .wb-feature-4grid,
-      .wb-why-5grid,
-      .wb-help-bottom-grid,
-      .wb-feedback-grid {
-        grid-template-columns: 1fr;
-      }
-      .wb-lang-row {
-        grid-template-columns: 1fr;
-      }
-      .wb-why-item {
-        border-right: none;
-        border-bottom: 1px solid #e2e8f0;
-        padding-bottom: 10px;
-      }
+    @media (max-width: 600px) {
+      .wb-header-inner { padding: 10px 14px; }
+      .wb-nav-link { padding: 8px 10px; font-size: 0.85rem; }
+      .wb-main { padding: 16px 14px 36px; }
+      .wb-card { padding: 16px; }
+      .wb-toolbar { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
-  <!-- 1. THANH ĐIỀU HƯỚNG CHÍNH THỐNG NHẤT -->
-  <header class="wb-navbar">
-    <div class="wb-navbar-inner">
-      <a href="/" class="wb-brand-group" onclick="event.preventDefault(); switchView('text');">
-        <div class="wb-brand-logo">
-          <img src="/assets/logo.jpg" alt="WORD BRIDGE" onerror="this.style.display='none'; this.parentElement.innerHTML=${JSON.stringify(WORD_BRIDGE_LOGO_SVG)};" />
-        </div>
-        <span class="wb-brand-divider"></span>
-        <div class="wb-brand-title-wrap">
-          <span class="wb-brand-title">Dịch thuật Word Bridge</span>
-          <span class="wb-badge-trans">TRANS</span>
-        </div>
-      </a>
-
-      <nav class="wb-nav-links" aria-label="Điều hướng chính">
-        <a href="/dich-van-ban" class="wb-nav-item" id="navBtn_text" onclick="event.preventDefault(); switchView('text');">
-          <span>${FEATURE_ICONS_SVG.text}</span>
-          <span>Dịch văn bản</span>
-        </a>
-        <a href="/dich-tai-lieu" class="wb-nav-item" id="navBtn_document" onclick="event.preventDefault(); switchView('document');">
-          <span>${FEATURE_ICONS_SVG.document}</span>
-          <span>Dịch tài liệu</span>
-        </a>
-        <a href="/dich-trang-web" class="wb-nav-item" id="navBtn_website" onclick="event.preventDefault(); switchView('website');">
-          <span>${FEATURE_ICONS_SVG.website}</span>
-          <span>Dịch trang web</span>
-        </a>
-        <a href="/dich-hinh-anh" class="wb-nav-item" id="navBtn_image" onclick="event.preventDefault(); switchView('image');">
-          <span>${FEATURE_ICONS_SVG.image}</span>
-          <span>Dịch hình ảnh</span>
-        </a>
-        <a href="/quyen-rieng-tu" class="wb-nav-item" id="navBtn_privacy" onclick="event.preventDefault(); switchView('privacy');">
-          <span>🛡️</span>
-          <span>Quyền riêng tư &amp; Điều khoản</span>
-        </a>
-        <a href="/tro-giup" class="wb-nav-item" id="navBtn_help" onclick="event.preventDefault(); switchView('help');">
-          <span>❓</span>
-          <span>Trợ giúp</span>
-        </a>
-
-        <div class="wb-app-launcher" onclick="toggleLauncherMenu(event)" title="Hệ sinh thái Word Bridge">
-          <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
-            <circle cx="5" cy="5" r="2"/><circle cx="12" cy="5" r="2"/><circle cx="19" cy="5" r="2"/>
-            <circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/>
-            <circle cx="5" cy="19" r="2"/><circle cx="12" cy="19" r="2"/><circle cx="19" cy="19" r="2"/>
-          </svg>
-          <div class="wb-launcher-menu" id="wbLauncherMenu">
-            <div style="font-size:11.5px;font-weight:800;color:#64748b;padding:4px 10px;text-transform:uppercase;">Hệ sinh thái Word Bridge</div>
-            <a href="https://dichthuat.wordbridge.io.vn" class="wb-launcher-link" onclick="event.preventDefault(); switchView('text');">
-              <strong>Word Bridge Translation (TRANS)</strong>
-              <span style="color:#64748b;font-size:12px;">Hệ thống dịch thuật toàn cầu (104 ngôn ngữ)</span>
-            </a>
-            <a href="https://wordbridge.io.vn" target="_blank" rel="noopener noreferrer" class="wb-launcher-link">
-              <strong>Word Bridge Learning</strong>
-              <span style="color:#64748b;font-size:12px;">Nền tảng học tập &amp; thực hành ngoại ngữ</span>
-            </a>
-            <div style="border-top:1px solid #e2e8f0;margin-top:6px;padding:8px 10px 2px;font-size:12px;color:#0f766e;">
-              Lượt truy cập D1: <strong id="wbTotalAccesses">${Number(totalAccesses).toLocaleString("vi-VN")}</strong>
-            </div>
-          </div>
-        </div>
-      </nav>
+  <header class="wb-header">
+    <div class="wb-header-inner">
+      <a href="/" class="wb-brand" data-view="text" aria-label="Word Bridge Translation Trang chủ">${LOGO_HORIZONTAL_LIGHT_SVG}</a>
+      <nav class="wb-nav" aria-label="Điều hướng chính">${navHtml}</nav>
     </div>
   </header>
 
-  <main class="wb-page-container">
-    <!-- =================================================================== -->
-    <!-- GIAO DIỆN 1: TRANG DỊCH VĂN BẢN (image_42d121.jpg)                  -->
-    <!-- =================================================================== -->
-    <section id="view_text" class="wb-view-section">
-      <div class="wb-main-card">
-        <div class="wb-lang-row">
-          <div class="wb-select-box">
-            <span class="wb-select-icon">✨</span>
-            <select id="wbTextSourceLang" class="wb-select-native" aria-label="Ngôn ngữ nguồn"></select>
+  <main class="wb-main">
+    <!-- 01. DỊCH VĂN BẢN -->
+    <section id="view-text" class="wb-view${view === "text" ? " is-active" : ""}" aria-label="Dịch văn bản">
+      <div class="wb-page-head">
+        <h1>${renderSvgIcon("text", { size: 24 })}<span>Dịch văn bản</span></h1>
+        <p>Dịch trực tiếp trên bộ nhớ tạm với 20 lĩnh vực chuyên ngành. Không lưu lịch sử hay nội dung dịch.</p>
+      </div>
+      <div class="wb-card">
+        <div class="wb-toolbar">
+          <div class="wb-field">
+            <label for="text-src-lang">${renderSvgIcon("language", { size: 16 })}<span>Ngôn ngữ nguồn</span></label>
+            <select id="text-src-lang" class="wb-select" aria-label="Chọn ngôn ngữ nguồn"></select>
           </div>
-
-          <button type="button" class="wb-swap-circle" onclick="swapLangPair('wbTextSourceLang', 'wbTextTargetLang', true)" title="Đổi vị trí hai ngôn ngữ">
-            ⇄
-          </button>
-
-          <div style="display:grid; grid-template-columns: 1.3fr 1fr; gap:10px;">
-            <div class="wb-select-box">
-              <span class="wb-select-icon">🌐</span>
-              <select id="wbTextTargetLang" class="wb-select-native" aria-label="Ngôn ngữ đích"></select>
-            </div>
-            <div class="wb-select-box" title="Lĩnh vực dịch thuật chuyên ngành">
-              <span class="wb-select-icon">🥞</span>
-              <select id="wbTextDomain" class="wb-select-native" aria-label="Lĩnh vực chuyên ngành"></select>
-            </div>
+          <button type="button" id="btn-swap-text" class="wb-btn wb-btn-icon" title="Đổi chiều ngôn ngữ" aria-label="Đổi chiều ngôn ngữ">${renderSvgIcon("swap", { size: 20 })}</button>
+          <div class="wb-field">
+            <label for="text-tgt-lang">${renderSvgIcon("language", { size: 16 })}<span>Ngôn ngữ đích</span></label>
+            <select id="text-tgt-lang" class="wb-select" aria-label="Chọn ngôn ngữ đích"></select>
+          </div>
+          <div class="wb-field">
+            <label for="text-domain">${renderSvgIcon("domain", { size: 16 })}<span>Lĩnh vực chuyên ngành</span></label>
+            <select id="text-domain" class="wb-select" aria-label="Chọn lĩnh vực chuyên ngành"></select>
           </div>
         </div>
 
-        <div class="wb-text-grid">
-          <!-- Khung nhập văn bản -->
-          <div class="wb-text-panel" id="wbTextSourcePanel">
-            <textarea
-              id="wbSourceInput"
-              class="wb-textarea"
-              maxlength="15000"
-              placeholder="Nhập văn bản cần dịch..."
-              oninput="onTextInputChanged()"
-            ></textarea>
-            <div class="wb-panel-bottom">
-              <div style="display:flex; align-items:center; gap:10px;">
-                <button type="button" class="wb-icon-action" onclick="speakTextContent('source')" title="Phát âm văn bản nguồn">
-                  🎙️
-                </button>
-                <span id="wbSourceCounters">0 ký tự &nbsp;|&nbsp; 0 từ</span>
-                <span id="wbDetectedLangInfo" style="color:var(--wb-blue);font-weight:600;"></span>
+        <div class="wb-dual-grid">
+          <div class="wb-pane">
+            <div class="wb-pane-head">
+              <span>Văn bản nguồn</span>
+              <span id="text-detected-badge"></span>
+            </div>
+            <textarea id="text-input" maxlength="15000" placeholder="Nhập hoặc dán văn bản cần dịch (tối đa 15.000 ký tự)..."></textarea>
+            <div class="wb-pane-foot">
+              <span id="text-char-count" style="font-size:0.84rem;color:var(--wb-muted);">0 / 15.000 ký tự</span>
+              <div class="wb-actions-row">
+                <button type="button" id="btn-speak-src" class="wb-btn wb-btn-icon" title="Phát âm văn bản nguồn" aria-label="Phát âm văn bản nguồn">${renderSvgIcon("speak", { size: 16 })}</button>
+                <button type="button" id="btn-clear-text" class="wb-btn wb-btn-icon" title="Xóa nội dung" aria-label="Xóa nội dung">${renderSvgIcon("clear", { size: 16 })}</button>
+                <button type="button" id="btn-run-text" class="wb-btn wb-btn-primary">${renderSvgIcon("text", { size: 16 })}<span>Dịch văn bản</span></button>
               </div>
-              <button type="button" class="wb-icon-action" onclick="clearTextTranslation()" title="Xóa nội dung">
-                ✕
-              </button>
             </div>
           </div>
 
-          <!-- Khung hiển thị bản dịch -->
-          <div class="wb-text-panel wb-text-panel-target" id="wbTextTargetPanel">
-            <div id="wbTargetOutput" class="wb-target-display placeholder">Bản dịch sẽ hiển thị tại đây...</div>
-            <div class="wb-panel-bottom">
-              <span id="wbTargetDomainMeta" style="font-size:12.5px;color:#64748b;">Chính sách: Zero User Data Storage</span>
-              <div style="display:flex; align-items:center; gap:6px;">
-                <button type="button" class="wb-icon-action" onclick="speakTextContent('target')" title="Phát âm bản dịch">
-                  🔊
-                </button>
-                <button type="button" class="wb-icon-action" onclick="copyTargetText()" title="Sao chép kết quả">
-                  ❐
-                </button>
-                <button type="button" class="wb-icon-action" onclick="toggleTargetFullscreen()" title="Mở rộng khung kết quả">
-                  ⤢
-                </button>
+          <div class="wb-pane" id="text-output-pane">
+            <div class="wb-pane-head">
+              <span>Kết quả dịch</span>
+              <span id="text-provider-badge" style="font-size:0.8rem;"></span>
+            </div>
+            <div id="text-output" class="wb-output-box wb-output-placeholder" aria-live="polite">Bản dịch sẽ hiển thị tại đây.</div>
+            <div class="wb-pane-foot">
+              <span id="text-stats-meta" style="font-size:0.84rem;color:var(--wb-muted);"></span>
+              <div class="wb-actions-row">
+                <button type="button" id="btn-speak-tgt" class="wb-btn wb-btn-icon" title="Phát âm bản dịch" aria-label="Phát âm bản dịch">${renderSvgIcon("speak", { size: 16 })}</button>
+                <button type="button" id="btn-copy-text" class="wb-btn wb-btn-icon" title="Sao chép bản dịch" aria-label="Sao chép bản dịch">${renderSvgIcon("copy", { size: 16 })}</button>
+                <button type="button" id="btn-expand-text" class="wb-btn wb-btn-icon" title="Phóng to khung kết quả" aria-label="Phóng to khung kết quả">${renderSvgIcon("expand", { size: 16 })}</button>
               </div>
             </div>
           </div>
         </div>
+        <div id="text-status" class="wb-status" role="status"></div>
+      </div>
+    </section>
 
-        <div class="wb-btn-center-row">
-          <button type="button" class="wb-btn-primary" id="wbBtnTranslateText" onclick="executeTextTranslation()">
-            <span>文A</span>
-            <span>Dịch</span>
-          </button>
+    <!-- 02. DỊCH TÀI LIỆU -->
+    <section id="view-document" class="wb-view${view === "document" ? " is-active" : ""}" aria-label="Dịch tài liệu">
+      <div class="wb-page-head">
+        <h1>${renderSvgIcon("document", { size: 24 })}<span>Dịch tài liệu</span></h1>
+        <p>Hỗ trợ PDF, DOCX, DOC, PPTX, XLSX, CSV, TXT (tối đa 50 MB). Xử lý hoàn toàn trên RAM và trả tệp kết quả trực tiếp.</p>
+      </div>
+      <div class="wb-card">
+        <div class="wb-toolbar">
+          <div class="wb-field">
+            <label for="doc-src-lang">${renderSvgIcon("language", { size: 16 })}<span>Ngôn ngữ nguồn</span></label>
+            <select id="doc-src-lang" class="wb-select"></select>
+          </div>
+          <button type="button" id="btn-swap-doc" class="wb-btn wb-btn-icon" title="Đổi chiều ngôn ngữ" aria-label="Đổi chiều ngôn ngữ">${renderSvgIcon("swap", { size: 20 })}</button>
+          <div class="wb-field">
+            <label for="doc-tgt-lang">${renderSvgIcon("language", { size: 16 })}<span>Ngôn ngữ đích</span></label>
+            <select id="doc-tgt-lang" class="wb-select"></select>
+          </div>
+          <div class="wb-field">
+            <label for="doc-domain">${renderSvgIcon("domain", { size: 16 })}<span>Lĩnh vực chuyên ngành</span></label>
+            <select id="doc-domain" class="wb-select"></select>
+          </div>
+        </div>
+
+        <div id="doc-dropzone" class="wb-dropzone" tabindex="0" role="button" aria-label="Chọn hoặc kéo thả tệp tài liệu">
+          ${renderSvgIcon("upload-doc", { size: 32 })}
+          <p id="doc-file-label">Kéo thả tài liệu vào đây hoặc bấm để chọn tệp</p>
+          <small>Định dạng hỗ trợ: PDF, DOCX, DOC, PPTX, XLSX, CSV, TXT · Tối đa 50 MB · Không lưu tệp trên máy chủ</small>
+          <input type="file" id="doc-file-input" accept=".pdf,.docx,.doc,.pptx,.xlsx,.csv,.txt" hidden>
+        </div>
+
+        <div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+          <button type="button" id="btn-run-doc" class="wb-btn wb-btn-primary">${renderSvgIcon("document", { size: 16 })}<span>Dịch tài liệu</span></button>
+          <button type="button" id="btn-download-doc" class="wb-btn" style="display:none;">${renderSvgIcon("download", { size: 16 })}<span>Tải tệp kết quả</span></button>
+        </div>
+        <div id="doc-status" class="wb-status" role="status"></div>
+        <div id="doc-preview-wrap" style="display:none;margin-top:14px;">
+          <h3 style="margin:0 0 8px;font-size:0.95rem;">Xem trước nội dung đã dịch</h3>
+          <pre id="doc-preview" style="background:#F8FAFC;border:1px solid var(--wb-border);border-radius:10px;padding:14px;white-space:pre-wrap;max-height:260px;overflow:auto;font-family:inherit;font-size:0.92rem;"></pre>
         </div>
       </div>
     </section>
 
-    <!-- =================================================================== -->
-    <!-- GIAO DIỆN 2: TRANG DỊCH TÀI LIỆU (image_42d13d.jpg)                 -->
-    <!-- =================================================================== -->
-    <section id="view_document" class="wb-view-section">
-      <div class="wb-main-card">
-        <div class="wb-section-head">
-          <div class="wb-section-icon-box">${FEATURE_ICONS_SVG.document}</div>
-          <div>
-            <h2>Dịch tài liệu</h2>
-            <p>Tải tài liệu lên để dịch nhanh và chính xác, giữ nguyên bố cục.</p>
+    <!-- 03. DỊCH TRANG WEB -->
+    <section id="view-website" class="wb-view${view === "website" ? " is-active" : ""}" aria-label="Dịch trang web">
+      <div class="wb-page-head">
+        <h1>${renderSvgIcon("website", { size: 24 })}<span>Dịch trang web</span></h1>
+        <p>Nhập liên kết trang web công khai để dịch nội dung an toàn trong khung cô lập.</p>
+      </div>
+      <div class="wb-card">
+        <div class="wb-toolbar">
+          <div class="wb-field">
+            <label for="web-src-lang">${renderSvgIcon("language", { size: 16 })}<span>Ngôn ngữ nguồn</span></label>
+            <select id="web-src-lang" class="wb-select"></select>
+          </div>
+          <button type="button" id="btn-swap-web" class="wb-btn wb-btn-icon" title="Đổi chiều ngôn ngữ" aria-label="Đổi chiều ngôn ngữ">${renderSvgIcon("swap", { size: 20 })}</button>
+          <div class="wb-field">
+            <label for="web-tgt-lang">${renderSvgIcon("language", { size: 16 })}<span>Ngôn ngữ đích</span></label>
+            <select id="web-tgt-lang" class="wb-select"></select>
+          </div>
+          <div class="wb-field">
+            <label for="web-domain">${renderSvgIcon("domain", { size: 16 })}<span>Lĩnh vực chuyên ngành</span></label>
+            <select id="web-domain" class="wb-select"></select>
           </div>
         </div>
 
-        <div
-          class="wb-dropzone-box"
-          onclick="document.getElementById('wbDocFileInput').click()"
-          ondragover="event.preventDefault(); this.classList.add('dragover');"
-          ondragleave="this.classList.remove('dragover');"
-          ondrop="onDropFile(event, 'document')"
-        >
-          <div style="color:var(--wb-blue);">${FEATURE_ICONS_SVG.document}</div>
-          <div class="wb-dropzone-title" id="wbDocSelectedLabel">Kéo thả tài liệu vào đây hoặc nhấn để chọn tệp</div>
-          <div class="wb-dropzone-sub">Hỗ trợ: PDF, DOCX, DOC, PPTX, XLSX, CSV, TXT &nbsp;|&nbsp; Dung lượng tối đa: 50 MB</div>
-          <button type="button" class="wb-btn-primary" style="min-width:160px;padding:10px 24px;font-size:14.5px;">
-            📁 Chọn tài liệu
-          </button>
-          <input
-            type="file"
-            id="wbDocFileInput"
-            accept=".pdf,.docx,.doc,.pptx,.xlsx,.csv,.txt"
-            style="display:none"
-            onchange="onDocFilePicked(this.files[0])"
-          />
+        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+          <input type="url" id="web-url-input" class="wb-input" style="flex:1;min-width:240px;" placeholder="https://example.com/bai-viet" aria-label="Địa chỉ URL trang web">
+          <button type="button" id="btn-run-web" class="wb-btn wb-btn-primary">${renderSvgIcon("website", { size: 16 })}<span>Dịch trang web</span></button>
         </div>
 
-        <div class="wb-controls-3col">
-          <div>
-            <label class="wb-field-label" for="wbDocSourceLang">Ngôn ngữ tài liệu</label>
-            <div class="wb-select-box">
-              <span class="wb-select-icon">✨</span>
-              <select id="wbDocSourceLang" class="wb-select-native"></select>
-            </div>
-          </div>
-
-          <button type="button" class="wb-swap-circle" onclick="swapLangPair('wbDocSourceLang', 'wbDocTargetLang', false)" title="Đổi chiều ngôn ngữ">
-            ⇄
-          </button>
-
-          <div>
-            <label class="wb-field-label" for="wbDocTargetLang">Dịch sang</label>
-            <div class="wb-select-box">
-              <span class="wb-select-icon">🌐</span>
-              <select id="wbDocTargetLang" class="wb-select-native"></select>
-            </div>
-          </div>
-
-          <div>
-            <label class="wb-field-label" for="wbDocDomain">Lĩnh vực (tùy chọn)</label>
-            <div class="wb-select-box">
-              <span class="wb-select-icon">🥞</span>
-              <select id="wbDocDomain" class="wb-select-native"></select>
-            </div>
-          </div>
+        <div class="wb-notice">
+          ${renderSvgIcon("shield", { size: 20 })}
+          <div>Để đảm bảo an toàn, hệ thống chỉ truy cập trang web công khai (HTTP/HTTPS), chặn địa chỉ mạng nội bộ, loại bỏ mã kịch bản không an toàn và hiển thị kết quả trong khung cô lập. Một số trang yêu cầu đăng nhập hoặc chặn truy cập tự động có thể không dịch được.</div>
         </div>
-
-        <div class="wb-btn-center-row">
-          <button type="button" class="wb-btn-primary" onclick="executeDocumentTranslation()">
-            <span>文A</span>
-            <span>Dịch tài liệu</span>
-          </button>
-        </div>
-
-        <!-- Khu vực tải kết quả tài liệu đã dịch -->
-        <div id="wbDocResultBox" style="display:none; margin-top:22px; padding:18px; border-radius:14px; border:1px solid #bae6fd; background:#f0f9ff;">
-          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
-            <div>
-              <strong id="wbDocOutName" style="font-size:16px; color:#0c4a6e;"></strong>
-              <div id="wbDocOutMeta" style="font-size:13px; color:#0369a1; margin-top:3px;"></div>
-            </div>
-            <button type="button" class="wb-btn-primary" id="wbDocDownloadTrigger">⬇️ Tải tài liệu đã dịch</button>
-          </div>
-          <div id="wbDocNoticeText" style="font-size:12.5px; color:#b45309; margin-top:8px;"></div>
-          <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px;">
-            <pre id="wbDocSourcePreview" style="margin:0; padding:10px; background:#fff; border:1px solid #cbd5e1; border-radius:8px; max-height:150px; overflow:auto; white-space:pre-wrap; font-size:12.5px;"></pre>
-            <pre id="wbDocTargetPreview" style="margin:0; padding:10px; background:#fff; border:1px solid #cbd5e1; border-radius:8px; max-height:150px; overflow:auto; white-space:pre-wrap; font-size:12.5px;"></pre>
-          </div>
-        </div>
+        <div id="web-status" class="wb-status" role="status"></div>
+        <iframe id="web-result-frame" class="wb-web-frame" sandbox="" title="Nội dung trang web đã dịch" style="display:none;"></iframe>
       </div>
     </section>
 
-    <!-- =================================================================== -->
-    <!-- GIAO DIỆN 3: TRANG DỊCH TRANG WEB (image_42d15f.jpg)                -->
-    <!-- =================================================================== -->
-    <section id="view_website" class="wb-view-section">
-      <div class="wb-main-card">
-        <div class="wb-section-head">
-          <div class="wb-section-icon-box">${FEATURE_ICONS_SVG.website}</div>
-          <div>
-            <h2>Dịch trang web</h2>
-            <p>Dịch toàn bộ nội dung của một trang web sang ngôn ngữ bạn chọn.</p>
-          </div>
-        </div>
-
-        <div class="wb-url-input-wrap">
-          <span style="font-size:18px; color:var(--wb-blue);">🔗</span>
-          <input
-            type="url"
-            id="wbWebsiteUrlInput"
-            class="wb-url-input"
-            placeholder="Nhập địa chỉ trang web (ví dụ: https://www.skyfirst.io.vn)"
-          />
-          <button type="button" class="wb-icon-action" onclick="document.getElementById('wbWebsiteUrlInput').value='';" title="Xóa URL">
-            ✕
-          </button>
-        </div>
-
-        <div class="wb-lang-row">
-          <div>
-            <label class="wb-field-label" for="wbWebSourceLang">Ngôn ngữ trang web</label>
-            <div class="wb-select-box">
-              <span class="wb-select-icon">✨</span>
-              <select id="wbWebSourceLang" class="wb-select-native"></select>
-            </div>
-          </div>
-
-          <button type="button" class="wb-swap-circle" style="margin-top:24px;" onclick="swapLangPair('wbWebSourceLang', 'wbWebTargetLang', false)" title="Đổi chiều ngôn ngữ">
-            ⇄
-          </button>
-
-          <div>
-            <label class="wb-field-label" for="wbWebTargetLang">Dịch sang</label>
-            <div class="wb-select-box">
-              <span class="wb-select-icon">🌐</span>
-              <select id="wbWebTargetLang" class="wb-select-native"></select>
-            </div>
-          </div>
-        </div>
-
-        <div class="wb-btn-center-row">
-          <button type="button" class="wb-btn-primary" onclick="executeWebsiteTranslation()">
-            <span>🌐</span>
-            <span>Dịch trang web</span>
-          </button>
-        </div>
-
-        <div class="wb-info-note-bar">
-          <span>ⓘ</span>
-          <span><strong>Lưu ý:</strong> Kết quả dịch sẽ được hiển thị trên một trang mới, giữ nguyên bố cục và các liên kết của trang web gốc.</span>
-        </div>
-
-        <div id="wbWebsiteResultBox" style="display:none; margin-top:20px; padding:18px; border-radius:14px; border:1px solid #bae6fd; background:#f8fafc;">
-          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:12px;">
-            <div>
-              <strong id="wbWebResultTitle" style="color:#0f172a; font-size:15.5px;"></strong>
-              <div id="wbWebResultMeta" style="font-size:13px; color:#475569;"></div>
-            </div>
-            <button type="button" class="wb-btn-primary" id="wbOpenTranslatedWebBtn" style="padding:9px 20px; font-size:14px;">
-              ↗️ Mở trang web đã dịch trên tab mới
-            </button>
-          </div>
-          <iframe id="wbWebPreviewFrame" title="Bản xem trước trang web đã dịch" sandbox="allow-same-origin" style="width:100%; height:360px; border:1px solid #cbd5e1; border-radius:10px; background:#ffffff;"></iframe>
-        </div>
+    <!-- 04. DỊCH HÌNH ẢNH -->
+    <section id="view-image" class="wb-view${view === "image" ? " is-active" : ""}" aria-label="Dịch hình ảnh">
+      <div class="wb-page-head">
+        <h1>${renderSvgIcon("image", { size: 24 })}<span>Dịch hình ảnh</span></h1>
+        <p>Tải lên hình ảnh JPG, JPEG, PNG hoặc WEBP (tối đa 10 MB) để nhận diện văn bản trong ảnh và dịch sang ngôn ngữ đích.</p>
       </div>
-    </section>
-
-    <!-- =================================================================== -->
-    <!-- GIAO DIỆN 4: TRANG DỊCH HÌNH ẢNH (image_42d17a.jpg)                 -->
-    <!-- =================================================================== -->
-    <section id="view_image" class="wb-view-section">
-      <div class="wb-main-card">
-        <div class="wb-section-head">
-          <div class="wb-section-icon-box">${FEATURE_ICONS_SVG.image}</div>
-          <div>
-            <h2>Dịch hình ảnh</h2>
-            <p>Nhận diện và dịch nội dung trong hình ảnh.</p>
+      <div class="wb-card">
+        <div class="wb-toolbar">
+          <div class="wb-field">
+            <label for="img-src-lang">${renderSvgIcon("language", { size: 16 })}<span>Ngôn ngữ nguồn</span></label>
+            <select id="img-src-lang" class="wb-select"></select>
+          </div>
+          <button type="button" id="btn-swap-img" class="wb-btn wb-btn-icon" title="Đổi chiều ngôn ngữ" aria-label="Đổi chiều ngôn ngữ">${renderSvgIcon("swap", { size: 20 })}</button>
+          <div class="wb-field">
+            <label for="img-tgt-lang">${renderSvgIcon("language", { size: 16 })}<span>Ngôn ngữ đích</span></label>
+            <select id="img-tgt-lang" class="wb-select"></select>
+          </div>
+          <div class="wb-field">
+            <label for="img-domain">${renderSvgIcon("domain", { size: 16 })}<span>Lĩnh vực chuyên ngành</span></label>
+            <select id="img-domain" class="wb-select"></select>
           </div>
         </div>
 
-        <div class="wb-image-split">
-          <div
-            class="wb-dropzone-box"
-            onclick="document.getElementById('wbOcrFileInput').click()"
-            ondragover="event.preventDefault(); this.classList.add('dragover');"
-            ondragleave="this.classList.remove('dragover');"
-            ondrop="onDropFile(event, 'image')"
-          >
-            <div style="color:var(--wb-blue);">${FEATURE_ICONS_SVG.image}</div>
-            <div class="wb-dropzone-title" id="wbOcrSelectedLabel">Kéo thả hình ảnh vào đây hoặc nhấn để chọn ảnh</div>
-            <div class="wb-dropzone-sub">Hỗ trợ: JPG, JPEG, PNG, WEBP &nbsp;|&nbsp; Dung lượng tối đa: 10 MB</div>
-            <button type="button" class="wb-btn-primary" style="min-width:160px;padding:10px 24px;font-size:14.5px;">
-              📁 Chọn hình ảnh
-            </button>
-            <input
-              type="file"
-              id="wbOcrFileInput"
-              accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
-              style="display:none"
-              onchange="onOcrFilePicked(this.files[0])"
-            />
-          </div>
-
-          <div class="wb-image-side-card">
-            <svg viewBox="0 0 260 110" width="230" height="98" aria-hidden="true">
-              <rect x="10" y="10" width="95" height="88" rx="12" fill="#f1f5f9" stroke="#cbd5e1"/>
-              <text x="34" y="52" font-family="Inter,sans-serif" font-size="28" font-weight="800" fill="#64748b">A</text>
-              <rect x="24" y="64" width="65" height="6" rx="3" fill="#cbd5e1"/>
-              <rect x="24" y="76" width="48" height="6" rx="3" fill="#cbd5e1"/>
-              <path d="M 118 54 L 142 54 M 135 47 L 142 54 L 135 61" stroke="#0b63e5" stroke-width="3" fill="none" stroke-linecap="round"/>
-              <rect x="155" y="10" width="95" height="88" rx="12" fill="#eef4ff" stroke="#93c5fd"/>
-              <text x="178" y="52" font-family="Inter,sans-serif" font-size="26" font-weight="800" fill="#0b63e5">文</text>
-              <rect x="169" y="64" width="65" height="6" rx="3" fill="#93c5fd"/>
-              <rect x="169" y="76" width="48" height="6" rx="3" fill="#93c5fd"/>
-            </svg>
-            <ul class="wb-check-list">
-              <li><span class="wb-green-tick">✓</span><span>Nhận diện văn bản trong ảnh</span></li>
-              <li><span class="wb-green-tick">✓</span><span>Dịch sang hơn 100 ngôn ngữ</span></li>
-              <li><span class="wb-green-tick">✓</span><span>Giữ nguyên bố cục nội dung</span></li>
-            </ul>
-          </div>
+        <div id="img-dropzone" class="wb-dropzone" tabindex="0" role="button" aria-label="Chọn hoặc kéo thả hình ảnh">
+          ${renderSvgIcon("upload-image", { size: 32 })}
+          <p id="img-file-label">Kéo thả hình ảnh vào đây hoặc bấm để chọn ảnh</p>
+          <small>Hỗ trợ JPG, JPEG, PNG, WEBP · Tối đa 10 MB · Ảnh được xóa khỏi bộ nhớ tạm ngay sau khi xử lý</small>
+          <input type="file" id="img-file-input" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" hidden>
         </div>
+        <img id="img-preview" class="wb-img-preview" alt="Xem trước hình ảnh tải lên">
 
-        <div class="wb-controls-3col">
-          <div>
-            <label class="wb-field-label" for="wbOcrSourceLang">Ngôn ngữ trong ảnh</label>
-            <div class="wb-select-box">
-              <span class="wb-select-icon">✨</span>
-              <select id="wbOcrSourceLang" class="wb-select-native"></select>
-            </div>
-          </div>
-
-          <button type="button" class="wb-swap-circle" onclick="swapLangPair('wbOcrSourceLang', 'wbOcrTargetLang', false)" title="Đổi chiều ngôn ngữ">
-            ⇄
-          </button>
-
-          <div>
-            <label class="wb-field-label" for="wbOcrTargetLang">Dịch sang</label>
-            <div class="wb-select-box">
-              <span class="wb-select-icon">🌐</span>
-              <select id="wbOcrTargetLang" class="wb-select-native"></select>
-            </div>
-          </div>
-
-          <div>
-            <label class="wb-field-label" for="wbOcrDomain">Lĩnh vực (tùy chọn)</label>
-            <div class="wb-select-box">
-              <span class="wb-select-icon">🥞</span>
-              <select id="wbOcrDomain" class="wb-select-native"></select>
-            </div>
-          </div>
+        <div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap;">
+          <button type="button" id="btn-run-img" class="wb-btn wb-btn-primary">${renderSvgIcon("image", { size: 16 })}<span>Dịch hình ảnh</span></button>
+          <button type="button" id="btn-copy-img" class="wb-btn" style="display:none;">${renderSvgIcon("copy", { size: 16 })}<span>Sao chép bản dịch</span></button>
+          <button type="button" id="btn-download-img" class="wb-btn" style="display:none;">${renderSvgIcon("download", { size: 16 })}<span>Tải bản dịch (.txt)</span></button>
         </div>
+        <div id="img-status" class="wb-status" role="status"></div>
 
-        <div class="wb-btn-center-row">
-          <button type="button" class="wb-btn-primary" onclick="executeOcrTranslation()">
-            <span>文A</span>
-            <span>Dịch hình ảnh</span>
-          </button>
-        </div>
-
-        <div class="wb-info-note-bar">
-          <span>ⓘ</span>
-          <span><strong>Lưu ý:</strong> Đảm bảo hình ảnh rõ nét, văn bản dễ đọc để đạt kết quả dịch chính xác hơn.</span>
-        </div>
-
-        <div id="wbOcrResultBox" style="display:none; margin-top:20px; padding:18px; border-radius:14px; border:1px solid #bae6fd; background:#f8fafc;">
-          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
-            <strong id="wbOcrResultHeader" style="color:#0f172a;">Kết quả Nhận diện &amp; Dịch hình ảnh</strong>
-            <div style="display:flex; gap:8px;">
-              <button type="button" class="wb-btn-outline" style="padding:7px 14px; font-size:13px;" onclick="copyOcrResult()">📋 Sao chép bản dịch</button>
-              <button type="button" class="wb-btn-outline" style="padding:7px 14px; font-size:13px;" onclick="downloadOcrResultTxt()">⬇️ Tải kết quả (.txt)</button>
-            </div>
+        <div id="img-results-grid" class="wb-dual-grid" style="margin-top:16px;display:none;">
+          <div class="wb-pane">
+            <div class="wb-pane-head"><span>Văn bản nhận diện từ hình ảnh</span></div>
+            <div id="img-extracted-text" class="wb-output-box"></div>
           </div>
-          <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px;">
-            <div>
-              <div style="font-size:12px; font-weight:700; color:#475569; margin-bottom:5px;">VĂN BẢN GỐC TRONG ẢNH:</div>
-              <pre id="wbOcrSourceText" style="margin:0; padding:12px; background:#fff; border:1px solid #cbd5e1; border-radius:10px; min-height:120px; white-space:pre-wrap; font-size:14px;"></pre>
-            </div>
-            <div>
-              <div style="font-size:12px; font-weight:700; color:#475569; margin-bottom:5px;">BẢN DỊCH:</div>
-              <pre id="wbOcrTargetText" style="margin:0; padding:12px; background:#fff; border:1px solid #cbd5e1; border-radius:10px; min-height:120px; white-space:pre-wrap; font-size:14px;"></pre>
-            </div>
+          <div class="wb-pane">
+            <div class="wb-pane-head"><span>Bản dịch hoàn chỉnh</span></div>
+            <div id="img-translated-text" class="wb-output-box"></div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- =================================================================== -->
-    <!-- GIAO DIỆN 5: TRANG GIỚI THIỆU (image_442e5d.jpg)                    -->
-    <!-- =================================================================== -->
-    <section id="view_about" class="wb-view-section">
-      <div class="wb-main-card">
-        <div class="wb-hero-banner">
-          <div>
-            <span class="wb-pill-tag">Giới thiệu</span>
-            <h1 class="wb-hero-title">Giới thiệu về Word Bridge Translation</h1>
-            <p class="wb-hero-desc">
-              Word Bridge Translation là công cụ dịch thuật trực tuyến của Word Bridge, giúp bạn chuyển đổi ngôn ngữ nhanh chóng, chính xác và tiện lợi cho học tập, làm việc, nghiên cứu và giao tiếp quốc tế.
-            </p>
-            <div style="display:flex; gap:12px; flex-wrap:wrap;">
-              <button type="button" class="wb-btn-primary" onclick="switchView('text')">
-                <span>文A</span>
-                <span>Sử dụng ngay</span>
-              </button>
-              <button type="button" class="wb-btn-outline" onclick="switchView('help')">
-                <span>▶</span>
-                <span>Xem hướng dẫn</span>
-              </button>
-            </div>
+    <!-- 05. GIỚI THIỆU -->
+    <section id="view-about" class="wb-view${view === "about" ? " is-active" : ""}" aria-label="Giới thiệu về Word Bridge Translation">
+      <div class="wb-card" style="padding:28px;">
+        <div class="wb-page-head">
+          <h1>${renderSvgIcon("info", { size: 24 })}<span>Giới thiệu về Word Bridge Translation</span></h1>
+          <p>Dịch thuật Word Bridge (TRANS) là nền tảng dịch thuật đa ngôn ngữ toàn cầu thuộc hệ sinh thái Word Bridge, vận hành trên hạ tầng máy chủ độc lập và tuân thủ nghiêm ngặt chính sách Zero User Data Storage.</p>
+        </div>
+        <div style="margin:16px 0 22px;display:flex;gap:10px;flex-wrap:wrap;">
+          <a href="/dich-van-ban" class="wb-btn wb-btn-primary" data-view="text">${renderSvgIcon("text", { size: 16 })}<span>Sử dụng ngay</span></a>
+          <a href="/tro-giup" class="wb-btn" data-view="help">${renderSvgIcon("help", { size: 16 })}<span>Xem hướng dẫn</span></a>
+        </div>
+
+        <h2 style="font-size:1.15rem;margin:20px 0 10px;">Bốn chức năng dịch thuật cốt lõi</h2>
+        <div class="wb-grid-4">
+          <div class="wb-feature-card">
+            ${renderSvgIcon("text", { size: 24 })}
+            <h3>Dịch văn bản</h3>
+            <p>Hỗ trợ nhận diện ngôn ngữ tự động, 20 lĩnh vực chuyên ngành và xử lý văn bản dài chuẩn Unicode.</p>
           </div>
-          <div style="text-align:center;">
-            <svg viewBox="0 0 360 210" width="100%" style="max-width:340px;" aria-hidden="true">
-              <circle cx="265" cy="95" r="72" fill="#dbeafe" stroke="#60a5fa" stroke-width="2"/>
-              <rect x="30" y="36" width="240" height="145" rx="14" fill="#ffffff" stroke="#93c5fd" stroke-width="2"/>
-              <rect x="30" y="36" width="240" height="24" rx="14" fill="#eff6ff"/>
-              <circle cx="46" cy="48" r="4" fill="#ef4444"/><circle cx="58" cy="48" r="4" fill="#f59e0b"/><circle cx="70" cy="48" r="4" fill="#22c55e"/>
-              <rect x="46" y="74" width="90" height="90" rx="10" fill="#f8fafc" stroke="#e2e8f0"/>
-              <text x="76" y="122" font-family="Inter,sans-serif" font-size="34" font-weight="800" fill="#0b63e5">A</text>
-              <circle cx="150" cy="118" r="16" fill="#ffffff" stroke="#93c5fd"/>
-              <text x="142" y="124" font-family="Inter,sans-serif" font-size="16" font-weight="800" fill="#0b63e5">⇄</text>
-              <rect x="164" y="74" width="90" height="90" rx="10" fill="#eff6ff" stroke="#bfdbfe"/>
-              <text x="194" y="122" font-family="Inter,sans-serif" font-size="32" font-weight="800" fill="#0b63e5">文</text>
-            </svg>
+          <div class="wb-feature-card">
+            ${renderSvgIcon("document", { size: 24 })}
+            <h3>Dịch tài liệu</h3>
+            <p>Xử lý PDF đa trang, DOCX, DOC, PPTX, XLSX, CSV, TXT hoàn toàn trên RAM và xuất tệp trực tiếp.</p>
+          </div>
+          <div class="wb-feature-card">
+            ${renderSvgIcon("website", { size: 24 })}
+            <h3>Dịch trang web</h3>
+            <p>Truy xuất trang công khai an toàn, lọc bỏ mã độc và hiển thị bản dịch trong khung cô lập.</p>
+          </div>
+          <div class="wb-feature-card">
+            ${renderSvgIcon("image", { size: 24 })}
+            <h3>Dịch hình ảnh</h3>
+            <p>Nhận diện chữ trực tiếp từ ảnh JPG, JPEG, PNG, WEBP và dịch song song trên bộ nhớ tạm.</p>
           </div>
         </div>
 
-        <h2 style="font-size:21px; font-weight:800; margin:0 0 14px 0;">Các tính năng chính</h2>
-        <div class="wb-feature-4grid">
-          <div class="wb-pastel-card wb-pastel-blue" onclick="switchView('text')">
-            <div style="color:#0b63e5; font-size:24px; font-weight:800; margin-bottom:8px;">A文</div>
-            <strong style="font-size:16px; display:block; margin-bottom:6px;">Dịch văn bản</strong>
-            <span style="font-size:13.5px; color:#475569;">Dịch nhanh đoạn văn, câu hoặc nội dung dài giữa nhiều ngôn ngữ.</span>
+        <h2 style="font-size:1.15rem;margin:22px 0 10px;">Cam kết chất lượng và quyền riêng tư</h2>
+        <div class="wb-grid-3">
+          <div class="wb-feature-card">
+            ${renderSvgIcon("shield", { size: 24 })}
+            <h3>Zero User Data Storage</h3>
+            <p>Văn bản, tài liệu, hình ảnh và kết quả dịch chỉ đi qua RAM tạm thời, không lưu vào cơ sở dữ liệu hay kho tệp.</p>
           </div>
-          <div class="wb-pastel-card wb-pastel-green" onclick="switchView('document')">
-            <div style="color:#16a34a; font-size:24px; margin-bottom:8px;">📄</div>
-            <strong style="font-size:16px; display:block; margin-bottom:6px;">Dịch tài liệu</strong>
-            <span style="font-size:13.5px; color:#475569;">Dịch các tệp tài liệu như PDF, DOCX, PPTX, XLSX và nhiều định dạng khác.</span>
+          <div class="wb-feature-card">
+            ${renderSvgIcon("lock", { size: 24 })}
+            <h3>Không huấn luyện AI từ dữ liệu người dùng</h3>
+            <p>Tuyệt đối không dùng nội dung dịch thuật của bạn để huấn luyện mô hình, tiếp thị hay quảng cáo.</p>
           </div>
-          <div class="wb-pastel-card wb-pastel-purple" onclick="switchView('website')">
-            <div style="color:#7c3aed; font-size:24px; margin-bottom:8px;">🌐</div>
-            <strong style="font-size:16px; display:block; margin-bottom:6px;">Dịch trang web</strong>
-            <span style="font-size:13.5px; color:#475569;">Dịch toàn bộ nội dung của một trang web sang ngôn ngữ bạn chọn.</span>
-          </div>
-          <div class="wb-pastel-card wb-pastel-amber" onclick="switchView('image')">
-            <div style="color:#d97706; font-size:24px; margin-bottom:8px;">🖼️</div>
-            <strong style="font-size:16px; display:block; margin-bottom:6px;">Dịch hình ảnh</strong>
-            <span style="font-size:13.5px; color:#475569;">Nhận diện và dịch nội dung trong hình ảnh.</span>
-          </div>
-        </div>
-
-        <h2 style="font-size:21px; font-weight:800; margin:0 0 12px 0;">Vì sao nên chọn Word Bridge Translation?</h2>
-        <div class="wb-why-5grid">
-          <div class="wb-why-item">
-            <strong style="display:block; color:#0f172a; margin-bottom:4px;">⚡ Nhanh chóng</strong>
-            <span style="font-size:13px; color:#475569;">Xử lý và trả kết quả trong thời gian ngắn.</span>
-          </div>
-          <div class="wb-why-item">
-            <strong style="display:block; color:#0f172a; margin-bottom:4px;">🛡️ Chính xác</strong>
-            <span style="font-size:13px; color:#475569;">Bản dịch tự nhiên, dễ hiểu, phù hợp ngữ cảnh.</span>
-          </div>
-          <div class="wb-why-item">
-            <strong style="display:block; color:#0f172a; margin-bottom:4px;">🥞 Đa dạng ngôn ngữ</strong>
-            <span style="font-size:13px; color:#475569;">Hỗ trợ nhiều ngôn ngữ trên thế giới.</span>
-          </div>
-          <div class="wb-why-item">
-            <strong style="display:block; color:#0f172a; margin-bottom:4px;">👥 Tiện lợi</strong>
-            <span style="font-size:13px; color:#475569;">Sử dụng trực tuyến, trên nhiều thiết bị, mọi lúc mọi nơi.</span>
-          </div>
-          <div class="wb-why-item">
-            <strong style="display:block; color:#0f172a; margin-bottom:4px;">🔒 An toàn</strong>
-            <span style="font-size:13px; color:#475569;">Tôn trọng quyền riêng tư, không lưu trữ nội dung dịch.</span>
+          <div class="wb-feature-card">
+            ${renderSvgIcon("bolt", { size: 24 })}
+            <h3>Hạ tầng tự vận hành độc lập</h3>
+            <p>API và bộ máy dịch thuật do Word Bridge Translation quản lý trực tiếp, minh bạch trạng thái hệ thống.</p>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- =================================================================== -->
-    <!-- GIAO DIỆN 6: TRANG QUYỀN RIÊNG TƯ & ĐIỀU KHOẢN (image_442e3d.jpg)   -->
-    <!-- =================================================================== -->
-    <section id="view_privacy" class="wb-view-section">
-      <div class="wb-main-card">
-        <div class="wb-hero-banner" style="margin-bottom:20px;">
-          <div>
-            <h1 class="wb-hero-title">Quyền riêng tư và Điều khoản</h1>
-            <p class="wb-hero-desc" style="margin-bottom:0;">
-              Cam kết bảo vệ dữ liệu cá nhân, quyền lợi của người dùng và quy định khi sử dụng Word Bridge Translation.
-            </p>
-          </div>
-          <div style="text-align:center;">
-            <svg viewBox="0 0 240 130" width="210" height="115" aria-hidden="true">
-              <path d="M 75 18 L 125 32 L 125 72 C 125 100 100 116 75 124 C 50 116 25 100 25 72 L 25 32 Z" fill="#1d4ed8"/>
-              <rect x="61" y="64" width="28" height="22" rx="4" fill="#ffffff"/>
-              <path d="M 67 64 V 56 A 8 8 0 0 1 83 56 V 64" stroke="#ffffff" stroke-width="4" fill="none"/>
-              <rect x="135" y="24" width="75" height="92" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="2"/>
-              <circle cx="152" cy="50" r="6" fill="#22c55e"/><rect x="164" y="47" width="34" height="6" rx="3" fill="#cbd5e1"/>
-              <circle cx="152" cy="74" r="6" fill="#22c55e"/><rect x="164" y="71" width="34" height="6" rx="3" fill="#cbd5e1"/>
-            </svg>
-          </div>
+    <!-- 06. QUYỀN RIÊNG TƯ VÀ ĐIỀU KHOẢN (1 TRANG DUY NHẤT, 5 MỤC, KHÔNG SIDEBAR) -->
+    <section id="view-privacy" class="wb-view${view === "privacy" ? " is-active" : ""}" aria-label="Quyền riêng tư và Điều khoản">
+      <div class="wb-page-head">
+        <h1>${renderSvgIcon("shield", { size: 24 })}<span>Quyền riêng tư và Điều khoản</span></h1>
+        <p>Tài liệu pháp lý thống nhất áp dụng cho toàn bộ dịch vụ Dịch thuật Word Bridge (TRANS) tại dichthuat.wordbridge.io.vn.</p>
+      </div>
+
+      <article class="wb-policy-section">
+        <h2>${renderSvgIcon("lock", { size: 20 })}<span>1. Quyền riêng tư</span></h2>
+        <p>Word Bridge Translation áp dụng chính sách <strong>Zero User Data Storage</strong>. Mọi văn bản nhập, tài liệu tải lên, hình ảnh, địa chỉ trang web và kết quả dịch thuật chỉ được xử lý tạm thời trong bộ nhớ RAM và bị xóa trắng ngay sau khi trả kết quả về trình duyệt.</p>
+        <ul>
+          <li>Không lưu lịch sử dịch thuật, không lưu tệp gốc hoặc tệp đầu ra trên ổ đĩa hay kho lưu trữ đám mây.</li>
+          <li>Không ghi nội dung dịch vào nhật ký máy chủ (log) và không đưa vào bộ nhớ đệm dùng chung.</li>
+          <li>Không thu thập thông tin thiết bị hay địa chỉ IP để xây dựng hồ sơ người dùng.</li>
+          <li>Không sử dụng nội dung dịch thuật để huấn luyện AI, quảng cáo hay chia sẻ cho bên thứ ba.</li>
+        </ul>
+      </article>
+
+      <article class="wb-policy-section">
+        <h2>${renderSvgIcon("book", { size: 20 })}<span>2. Điều khoản sử dụng</span></h2>
+        <p>Người dùng cam kết sử dụng Dịch thuật Word Bridge cho mục đích hợp pháp, không tải lên tệp độc hại, mã thực thi, hoặc sử dụng công cụ Dịch trang web để quét hay tấn công hạ tầng nội bộ.</p>
+        <p>Bản dịch tự động hỗ trợ tra cứu và làm việc nhanh; đối với tài liệu pháp lý, y tế hoặc hợp đồng ràng buộc, người dùng nên hiệu đính bởi chuyên gia trước khi ban hành chính thức.</p>
+      </article>
+
+      <article class="wb-policy-section">
+        <h2>${renderSvgIcon("info", { size: 20 })}<span>3. Chính sách cookie</span></h2>
+        <p>Word Bridge Translation không sử dụng cookie quảng cáo, không sử dụng cookie theo dõi hành vi đa trang và không lưu nội dung dịch trong bộ nhớ trình duyệt (localStorage, sessionStorage hay IndexedDB).</p>
+      </article>
+
+      <article class="wb-policy-section">
+        <h2>${renderSvgIcon("shield", { size: 20 })}<span>4. Quyền sở hữu trí tuệ</span></h2>
+        <p>Người dùng giữ toàn bộ quyền sở hữu trí tuệ đối với nội dung gốc và bản dịch tạo ra từ tài liệu của mình. Thương hiệu Word Bridge, Word Bridge Translation, giao diện, mã nguồn và hệ thống nhận diện đồ họa thuộc quyền sở hữu của hệ sinh thái Word Bridge.</p>
+      </article>
+
+      <article class="wb-policy-section">
+        <h2>${renderSvgIcon("bell", { size: 20 })}<span>5. Cập nhật chính sách</span></h2>
+        <p>Khi có thay đổi về kỹ thuật hoặc quy định pháp luật liên quan đến bảo vệ dữ liệu, trang này sẽ được cập nhật công khai kèm ngày hiệu lực mới. Mọi câu hỏi xin gửi về <a href="/phan-hoi" data-view="feedback">trang Gửi ý kiến phản hồi</a> hoặc email <strong>wordbridge.education@gmail.com</strong>.</p>
+      </article>
+    </section>
+
+    <!-- 07. TRỢ GIÚP (1 TRANG DUY NHẤT, 6 NHÓM, TÌM KIẾM + FAQ ĐÓNG/MỞ, KHÔNG SIDEBAR) -->
+    <section id="view-help" class="wb-view${view === "help" ? " is-active" : ""}" aria-label="Trợ giúp">
+      <div class="wb-page-head">
+        <h1>${renderSvgIcon("help", { size: 24 })}<span>Trợ giúp</span></h1>
+        <p>Hướng dẫn sử dụng, xử lý sự cố và giải đáp thắc mắc về Dịch thuật Word Bridge (TRANS).</p>
+      </div>
+
+      <div class="wb-card" style="margin-bottom:16px;">
+        <div class="wb-field">
+          <label for="help-search">${renderSvgIcon("search", { size: 16 })}<span>Tìm kiếm hướng dẫn nhanh</span></label>
+          <input type="search" id="help-search" class="wb-input" placeholder="Nhập từ khóa (ví dụ: PDF, hình ảnh, trang web, quyền riêng tư, phản hồi)...">
         </div>
+      </div>
 
-        <div class="wb-accordion-list">
-          <div class="wb-accordion-item open">
-            <button type="button" class="wb-accordion-header" onclick="toggleAccordion(this)">
-              <div class="wb-acc-left">
-                <div class="wb-acc-icon">🛡️</div>
-                <div>
-                  <strong style="font-size:16.5px; display:block; color:#0f172a;">Quyền riêng tư</strong>
-                  <span style="font-size:13.5px; color:#475569;">Giải thích cách chúng tôi thu thập, sử dụng, xử lý và bảo vệ thông tin của bạn khi sử dụng dịch vụ.</span>
-                </div>
-              </div>
-              <span>⌄</span>
-            </button>
-            <div class="wb-accordion-body">
-              <ul>
-                <li><strong>Chính sách Zero User Data Storage:</strong> Hệ thống Dịch thuật Word Bridge không lưu trữ văn bản nguồn, không lưu kết quả dịch, không lưu tài liệu gốc, không lưu hình ảnh tải lên và không lưu lịch sử dịch thuật cá nhân.</li>
-                <li><strong>Sử dụng Cloudflare D1 &amp; R2:</strong> Cơ sở dữ liệu Cloudflare D1 (<code>word</code>) chỉ lưu duy nhất một chỉ số tổng lượt truy cập website (<code>site_metrics.total_accesses</code>). Cloudflare R2 không được sử dụng để lưu trữ tài liệu hoặc kết quả dịch của người dùng.</li>
-                <li><strong>Không huấn luyện &amp; Không quảng cáo:</strong> Nội dung dịch chỉ được xử lý tạm thời trên RAM, giải phóng ngay sau khi hoàn tất hoặc khi xảy ra lỗi, không sử dụng để huấn luyện mô hình AI và không dùng cho mục đích quảng cáo.</li>
-                <li><strong>Biểu mẫu phản hồi:</strong> Khi bạn chủ động gửi biểu mẫu phản hồi hoặc yêu cầu hỗ trợ, nội dung đó được chuyển trực tiếp đến địa chỉ email hỗ trợ chính thức <strong>${OFFICIAL_SUPPORT_EMAIL}</strong> để đội ngũ kỹ thuật xử lý yêu cầu.</li>
-              </ul>
-            </div>
-          </div>
+      <div id="help-groups-container">
+        <article class="wb-policy-section wb-help-block" data-search="huong dan su dung dich van ban tai lieu trang web hinh anh">
+          <h2>${renderSvgIcon("book", { size: 20 })}<span>1. Hướng dẫn sử dụng</span></h2>
+          <ul>
+            <li><a href="/dich-van-ban" data-view="text"><strong>Dịch văn bản:</strong></a> Chọn ngôn ngữ nguồn (hoặc tự động nhận diện), ngôn ngữ đích, lĩnh vực chuyên ngành rồi bấm Dịch văn bản.</li>
+            <li><a href="/dich-tai-lieu" data-view="document"><strong>Dịch tài liệu:</strong></a> Kéo thả tệp PDF, DOCX, DOC, PPTX, XLSX, CSV hoặc TXT (tối đa 50 MB) và tải trực tiếp tệp kết quả.</li>
+            <li><a href="/dich-trang-web" data-view="website"><strong>Dịch trang web:</strong></a> Dán địa chỉ URL công khai (https://...) để xem bản dịch trong khung an toàn.</li>
+            <li><a href="/dich-hinh-anh" data-view="image"><strong>Dịch hình ảnh:</strong></a> Tải ảnh JPG, JPEG, PNG hoặc WEBP (tối đa 10 MB) để nhận diện chữ và xem bản dịch song song.</li>
+          </ul>
+        </article>
 
-          <div class="wb-accordion-item">
-            <button type="button" class="wb-accordion-header" onclick="toggleAccordion(this)">
-              <div class="wb-acc-left">
-                <div class="wb-acc-icon">📄</div>
-                <div>
-                  <strong style="font-size:16.5px; display:block; color:#0f172a;">Điều khoản sử dụng</strong>
-                  <span style="font-size:13.5px; color:#475569;">Quy định về phạm vi, điều kiện, trách nhiệm và quyền, nghĩa vụ của người dùng khi sử dụng Word Bridge Translation.</span>
-                </div>
-              </div>
-              <span>⌄</span>
-            </button>
-            <div class="wb-accordion-body">
-              <p>Người dùng được phép sử dụng miễn phí các tính năng dịch văn bản, dịch tài liệu (PDF, DOCX, DOC, PPTX, XLSX, CSV, TXT tối đa 50 MB), dịch trang web và dịch hình ảnh (JPG, JPEG, PNG, WEBP tối đa 10 MB) cho mục đích học tập, làm việc, nghiên cứu hợp pháp. Nghiêm cấm tải lên tệp chứa mã độc, macro độc hại hoặc lợi dụng chức năng dịch trang web để tấn công SSRF vào hệ thống mạng nội bộ.</p>
-            </div>
-          </div>
+        <article class="wb-policy-section wb-help-block" data-search="xu ly su co loi pdf ma hoa mang cham vuot dung luong">
+          <h2>${renderSvgIcon("alert", { size: 20 })}<span>2. Xử lý sự cố</span></h2>
+          <ul>
+            <li><strong>Tệp PDF bị báo mã hóa:</strong> Vui lòng gỡ mật khẩu bảo vệ PDF trước khi tải lên.</li>
+            <li><strong>Tệp PDF dạng ảnh quét không có lớp chữ:</strong> Hãy chuyển từng trang sang ảnh PNG/JPG và dùng mục <a href="/dich-hinh-anh" data-view="image">Dịch hình ảnh</a>.</li>
+            <li><strong>Không dịch được trang web:</strong> Một số website yêu cầu đăng nhập hoặc chặn truy cập tự động; hệ thống cũng chặn địa chỉ mạng nội bộ để bảo mật.</li>
+            <li><strong>Báo lỗi máy chủ dịch tạm thời (503):</strong> Bộ máy dịch thuật tự vận hành đang nạp mô hình hoặc bảo trì; vui lòng thử lại sau ít phút.</li>
+          </ul>
+        </article>
 
-          <div class="wb-accordion-item">
-            <button type="button" class="wb-accordion-header" onclick="toggleAccordion(this)">
-              <div class="wb-acc-left">
-                <div class="wb-acc-icon">🍪</div>
-                <div>
-                  <strong style="font-size:16.5px; display:block; color:#0f172a;">Chính sách cookie</strong>
-                  <span style="font-size:13.5px; color:#475569;">Thông tin về việc sử dụng cookie để cải thiện trải nghiệm và vận hành dịch vụ.</span>
-                </div>
-              </div>
-              <span>⌄</span>
-            </button>
-            <div class="wb-accordion-body">
-              <p>Word Bridge Translation không sử dụng cookie theo dõi quảng cáo, không lưu nội dung dịch vào <code>document.cookie</code>, <code>localStorage</code>, <code>sessionStorage</code> hay <code>indexedDB</code> của trình duyệt. Mọi phản hồi API đều áp dụng chính sách <code>Cache-Control: no-store</code>.</p>
-            </div>
-          </div>
+        <article class="wb-policy-section wb-help-block" data-search="tai khoan bao mat quyen rieng tu zero user data storage">
+          <h2>${renderSvgIcon("shield", { size: 20 })}<span>3. Tài khoản và Bảo mật</span></h2>
+          <p>Bạn có thể sử dụng Dịch thuật Word Bridge trực tiếp mà không cần đăng nhập. Toàn bộ nội dung dịch được xử lý trong RAM và xóa ngay sau khi hoàn tất. Xem chi tiết tại <a href="/quyen-rieng-tu" data-view="privacy">Quyền riêng tư và Điều khoản</a>.</p>
+        </article>
 
-          <div class="wb-accordion-item">
-            <button type="button" class="wb-accordion-header" onclick="toggleAccordion(this)">
-              <div class="wb-acc-left">
-                <div class="wb-acc-icon">©</div>
-                <div>
-                  <strong style="font-size:16.5px; display:block; color:#0f172a;">Quyền sở hữu trí tuệ</strong>
-                  <span style="font-size:13.5px; color:#475569;">Quy định về bản quyền, quyền sở hữu trí tuệ đối với nội dung, thương hiệu và công nghệ của Word Bridge.</span>
-                </div>
-              </div>
-              <span>⌄</span>
-            </button>
-            <div class="wb-accordion-body">
-              <p>Thương hiệu Word Bridge, biểu tượng cây cầu trên trang sách mở, khẩu hiệu <em>"Where Languages Bring People Together"</em> và kiến trúc phần mềm Word Bridge Translation thuộc quyền sở hữu trí tuệ của Hệ sinh thái Word Bridge (<code>wordbridge.io.vn</code>). Người dùng giữ toàn bộ quyền sở hữu trí tuệ đối với văn bản và tài liệu gốc của mình.</p>
-            </div>
+        <article class="wb-policy-section wb-help-block" data-search="cau hoi thuong gap faq luu tru doc ngon ngu">
+          <h2>${renderSvgIcon("help", { size: 20 })}<span>4. Câu hỏi thường gặp</span></h2>
+          <div class="wb-faq-item">
+            <button type="button" class="wb-faq-btn" aria-expanded="false"><span>Word Bridge Translation có lưu nội dung tôi đã dịch không?</span>${renderSvgIcon("chevron-down", { size: 16 })}</button>
+            <div class="wb-faq-body">Không. Theo chính sách Zero User Data Storage, văn bản, tài liệu, hình ảnh và kết quả dịch chỉ tồn tại tạm thời trên RAM trong suốt phiên xử lý rồi được giải phóng ngay.</div>
           </div>
+          <div class="wb-faq-item">
+            <button type="button" class="wb-faq-btn" aria-expanded="false"><span>Vì sao tệp .DOC đời cũ xuất ra định dạng .TXT?</span>${renderSvgIcon("chevron-down", { size: 16 })}</button>
+            <div class="wb-faq-body">Định dạng nhị phân .DOC đời cũ không hỗ trợ tái cấu trúc XML như .DOCX, do đó hệ thống trích xuất toàn bộ nội dung văn bản và xuất tệp .TXT chuẩn UTF-8. Nếu muốn giữ cấu trúc tài liệu, bạn nên lưu tệp dưới dạng .DOCX trước khi dịch.</div>
+          </div>
+          <div class="wb-faq-item">
+            <button type="button" class="wb-faq-btn" aria-expanded="false"><span>20 lĩnh vực chuyên ngành có tác dụng gì?</span>${renderSvgIcon("chevron-down", { size: 16 })}</button>
+            <div class="wb-faq-body">Khi bạn chọn lĩnh vực (ví dụ Pháp lý, Y tế, Tài chính, Công nghệ thông tin), hệ thống áp dụng bộ thuật ngữ chuyên ngành tương ứng trong quá trình tiền xử lý và hậu xử lý bản dịch.</div>
+          </div>
+        </article>
 
-          <div class="wb-accordion-item">
-            <button type="button" class="wb-accordion-header" onclick="toggleAccordion(this)">
-              <div class="wb-acc-left">
-                <div class="wb-acc-icon">🔄</div>
-                <div>
-                  <strong style="font-size:16.5px; display:block; color:#0f172a;">Cập nhật chính sách</strong>
-                  <span style="font-size:13.5px; color:#475569;">Cách thức và thời điểm chúng tôi cập nhật, điều chỉnh các chính sách liên quan.</span>
-                </div>
-              </div>
-              <span>⌄</span>
-            </button>
-            <div class="wb-accordion-body">
-              <p>Mọi cập nhật về chính sách bảo mật và điều khoản dịch vụ sẽ được công bố công khai tại trang này trên <code>https://dichthuat.wordbridge.io.vn/quyen-rieng-tu</code> đồng thời giữ vững nguyên tắc cốt lõi là không lưu trữ dữ liệu dịch thuật của người dùng.</p>
-            </div>
-          </div>
-        </div>
+        <article class="wb-policy-section wb-help-block" data-search="ho tro giai dap email lien he wordbridge">
+          <h2>${renderSvgIcon("mail", { size: 20 })}<span>5. Hỗ trợ và giải đáp</span></h2>
+          <p>Kênh tiếp nhận hỗ trợ kỹ thuật chính thức và duy nhất của Word Bridge Translation là hộp thư <strong>wordbridge.education@gmail.com</strong>.</p>
+        </article>
+
+        <article class="wb-policy-section wb-help-block" data-search="gui y kien phan hoi bao loi de xuat">
+          <h2>${renderSvgIcon("feedback", { size: 20 })}<span>6. Gửi ý kiến phản hồi</span></h2>
+          <p>Nếu bạn phát hiện lỗi kỹ thuật, muốn đề xuất ngôn ngữ mới hoặc cần hỗ trợ chuyên sâu, hãy gửi biểu mẫu trực tuyến để hệ thống tự động chuyển thư đến đội ngũ kỹ thuật.</p>
+          <a href="/phan-hoi" class="wb-btn wb-btn-primary" data-view="feedback" style="margin-top:8px;">${renderSvgIcon("send", { size: 16 })}<span>Mở biểu mẫu Gửi ý kiến phản hồi</span></a>
+        </article>
       </div>
     </section>
 
-    <!-- =================================================================== -->
-    <!-- GIAO DIỆN 7: TRANG TRỢ GIÚP (image_44444c.jpg)                      -->
-    <!-- =================================================================== -->
-    <section id="view_help" class="wb-view-section">
-      <div class="wb-main-card">
-        <div class="wb-hero-banner" style="margin-bottom:24px;">
-          <div>
-            <span class="wb-pill-tag">Trung tâm hỗ trợ</span>
-            <h1 class="wb-hero-title">Trợ giúp – Word Bridge Translation</h1>
-            <p class="wb-hero-desc">
-              Hướng dẫn sử dụng, giải đáp thắc mắc và hỗ trợ bạn trong quá trình sử dụng dịch vụ.
-            </p>
-            <div class="wb-help-search-bar">
-              <span style="color:#64748b; margin-right:8px;">🔍</span>
-              <input
-                type="search"
-                id="wbHelpSearchInput"
-                placeholder="Tìm kiếm hướng dẫn, câu hỏi thường gặp..."
-                oninput="filterHelpContent()"
-              />
-              <button type="button" class="wb-btn-primary" style="min-width:110px; padding:9px 18px; border-radius:999px; font-size:14px;" onclick="filterHelpContent()">
-                Tìm kiếm
-              </button>
+    <!-- 08. GỬI Ý KIẾN PHẢN HỒI -->
+    <section id="view-feedback" class="wb-view${view === "feedback" ? " is-active" : ""}" aria-label="Gửi ý kiến phản hồi">
+      <div class="wb-page-head">
+        <h1>${renderSvgIcon("feedback", { size: 24 })}<span>Gửi ý kiến phản hồi</span></h1>
+        <p>Mọi phản hồi được chuyển email tự động tới địa chỉ chính thức wordbridge.education@gmail.com và không lưu vào cơ sở dữ liệu dịch thuật.</p>
+      </div>
+
+      <div class="wb-card">
+        <form id="feedback-form" novalidate>
+          <input type="text" id="fb-trap" class="wb-hp" tabindex="-1" autocomplete="off" aria-hidden="true">
+          <div class="wb-form-grid">
+            <div class="wb-field">
+              <label for="fb-type">${renderSvgIcon("info", { size: 16 })}<span>Loại phản hồi *</span></label>
+              <select id="fb-type" class="wb-select" required>${feedbackOptionsHtml}</select>
             </div>
-          </div>
-          <div style="text-align:center;">
-            <svg viewBox="0 0 260 150" width="230" height="130" aria-hidden="true">
-              <rect x="40" y="34" width="160" height="98" rx="10" fill="#ffffff" stroke="#60a5fa" stroke-width="3"/>
-              <rect x="95" y="12" width="54" height="40" rx="10" fill="#1d4ed8"/>
-              <text x="122" y="40" text-anchor="middle" font-family="Inter,sans-serif" font-size="26" font-weight="800" fill="#ffffff">?</text>
-              <circle cx="170" cy="88" r="24" fill="#dbeafe"/>
-              <text x="170" y="96" text-anchor="middle" font-size="22">🎧</text>
-            </svg>
-          </div>
-        </div>
-
-        <!-- 4 Thẻ danh mục Trợ giúp -->
-        <div class="wb-feature-4grid" style="margin-bottom:22px;">
-          <div class="wb-pastel-card wb-pastel-blue" onclick="showHelpTopicDetail('guides')">
-            <div style="color:#0b63e5; font-size:24px; margin-bottom:8px;">📖</div>
-            <strong style="font-size:16px; display:block; margin-bottom:5px;">Hướng dẫn sử dụng</strong>
-            <span style="font-size:13px; color:#475569;">Cách sử dụng các tính năng dịch văn bản, tài liệu, trang web và hình ảnh.</span>
-          </div>
-          <div class="wb-pastel-card wb-pastel-green" onclick="showHelpTopicDetail('troubleshooting')">
-            <div style="color:#16a34a; font-size:24px; margin-bottom:8px;">⚙️</div>
-            <strong style="font-size:16px; display:block; margin-bottom:5px;">Xử lý sự cố</strong>
-            <span style="font-size:13px; color:#475569;">Các giải pháp cho lỗi thường gặp khi sử dụng dịch vụ.</span>
-          </div>
-          <div class="wb-pastel-card wb-pastel-purple" onclick="showHelpTopicDetail('security')">
-            <div style="color:#7c3aed; font-size:24px; margin-bottom:8px;">🛡️</div>
-            <strong style="font-size:16px; display:block; margin-bottom:5px;">Tài khoản &amp; Bảo mật</strong>
-            <span style="font-size:13px; color:#475569;">Thông tin về quyền riêng tư, bảo mật dữ liệu và sử dụng an toàn.</span>
-          </div>
-          <div class="wb-pastel-card wb-pastel-amber" onclick="showHelpTopicDetail('faq')">
-            <div style="color:#d97706; font-size:24px; margin-bottom:8px;">ⓘ</div>
-            <strong style="font-size:16px; display:block; margin-bottom:5px;">Câu hỏi thường gặp (FAQ)</strong>
-            <span style="font-size:13px; color:#475569;">Tổng hợp các thắc mắc phổ biến và câu trả lời chi tiết.</span>
-          </div>
-        </div>
-
-        <!-- Khu vực hiển thị chi tiết Hướng dẫn / Xử lý sự cố / Bảo mật khi người dùng chọn thẻ -->
-        <div id="wbHelpTopicDetailBox" style="margin-bottom:22px; padding:18px 20px; border-radius:14px; background:#f8fafc; border:1px solid #e2e8f0;">
-          <h3 id="wbHelpTopicTitle" style="margin:0 0 10px 0; color:#0f172a; font-size:17px;">1. Hướng dẫn sử dụng 04 cơ chế dịch thuật</h3>
-          <div id="wbHelpTopicBody" style="font-size:14px; color:#334155; line-height:1.65;">
-            <ul>
-              <li><strong>Dịch văn bản (<a href="/dich-van-ban" onclick="event.preventDefault(); switchView('text');">Mở công cụ</a>):</strong> Nhập hoặc dán văn bản (tối đa 15.000 ký tự/lần), chọn ngôn ngữ nguồn hoặc để <em>Tự động nhận diện</em>, chọn ngôn ngữ đích, chọn lĩnh vực chuyên ngành và nhấn <strong>Dịch</strong>.</li>
-              <li><strong>Dịch tài liệu (<a href="/dich-tai-lieu" onclick="event.preventDefault(); switchView('document');">Mở công cụ</a>):</strong> Tải lên tệp PDF, DOCX, DOC, PPTX, XLSX, CSV hoặc TXT (tối đa 50 MB, không đặt mật khẩu và không chứa Macro), chọn ngôn ngữ và lĩnh vực rồi nhấn <strong>Dịch tài liệu</strong> để nhận tệp kết quả tải về ngay.</li>
-              <li><strong>Dịch trang web (<a href="/dich-trang-web" onclick="event.preventDefault(); switchView('website');">Mở công cụ</a>):</strong> Nhập địa chỉ URL công khai (bắt đầu bằng <code>http://</code> hoặc <code>https://</code>), chọn ngôn ngữ đích và nhấn <strong>Dịch trang web</strong> để xem phiên bản trang web đã dịch giữ nguyên bố cục.</li>
-              <li><strong>Dịch hình ảnh (<a href="/dich-hinh-anh" onclick="event.preventDefault(); switchView('image');">Mở công cụ</a>):</strong> Chọn ảnh JPG, JPEG, PNG hoặc WEBP (tối đa 10 MB) có chữ rõ nét và nhấn <strong>Dịch hình ảnh</strong> để trích xuất văn bản gốc kèm bản dịch.</li>
-            </ul>
-          </div>
-        </div>
-
-        <!-- Khối 2 cột dưới: Câu hỏi thường gặp (FAQ) & Vẫn cần hỗ trợ? (image_44444c.jpg) -->
-        <div class="wb-help-bottom-grid">
-          <div style="border:1px solid #e2e8f0; border-radius:16px; padding:20px;">
-            <h3 style="margin:0 0 14px 0; font-size:18px; display:flex; align-items:center; gap:8px;">
-              <span>💬</span>
-              <span>Câu hỏi thường gặp</span>
-            </h3>
-            <div class="wb-accordion-list" id="wbFaqList">
-              <div class="wb-accordion-item faq-entry">
-                <button type="button" class="wb-accordion-header" style="padding:13px 16px;" onclick="toggleAccordion(this)">
-                  <strong style="font-size:14.5px; color:#0f172a;">Word Bridge Translation có miễn phí không?</strong>
-                  <span>⌄</span>
-                </button>
-                <div class="wb-accordion-body" style="padding:12px 16px;">
-                  Word Bridge Translation cung cấp hoàn toàn miễn phí cả 04 tính năng Dịch văn bản, Dịch tài liệu, Dịch trang web và Dịch hình ảnh trực tuyến cho cộng đồng người dùng.
-                </div>
-              </div>
-
-              <div class="wb-accordion-item faq-entry">
-                <button type="button" class="wb-accordion-header" style="padding:13px 16px;" onclick="toggleAccordion(this)">
-                  <strong style="font-size:14.5px; color:#0f172a;">Dịch tài liệu hỗ trợ những định dạng nào?</strong>
-                  <span>⌄</span>
-                </button>
-                <div class="wb-accordion-body" style="padding:12px 16px;">
-                  Hệ thống hỗ trợ 07 định dạng tài liệu phổ biến: <strong>PDF, DOCX, DOC, PPTX, XLSX, CSV, TXT</strong> với dung lượng tối đa 50 MB mỗi tệp.
-                </div>
-              </div>
-
-              <div class="wb-accordion-item faq-entry">
-                <button type="button" class="wb-accordion-header" style="padding:13px 16px;" onclick="toggleAccordion(this)">
-                  <strong style="font-size:14.5px; color:#0f172a;">Dịch trang web có giữ nguyên bố cục không?</strong>
-                  <span>⌄</span>
-                </button>
-                <div class="wb-accordion-body" style="padding:12px 16px;">
-                  Hệ thống bảo toàn tối đa cấu trúc HTML, hình ảnh, bảng biểu và chuẩn hóa các liên kết của trang web gốc. Lưu ý: những trang yêu cầu đăng nhập tài khoản riêng, chặn bot (403) hoặc địa chỉ mạng nội bộ (SSRF) sẽ không thể truy cập.
-                </div>
-              </div>
-
-              <div class="wb-accordion-item faq-entry">
-                <button type="button" class="wb-accordion-header" style="padding:13px 16px;" onclick="toggleAccordion(this)">
-                  <strong style="font-size:14.5px; color:#0f172a;">Nội dung tôi dịch có được lưu lại không?</strong>
-                  <span>⌄</span>
-                </button>
-                <div class="wb-accordion-body" style="padding:12px 16px;">
-                  <strong>Tuyệt đối không.</strong> Hệ thống áp dụng nguyên tắc <strong>Zero User Data Storage</strong>: toàn bộ văn bản, tài liệu, hình ảnh và kết quả dịch chỉ được xử lý tạm thời trên RAM và xóa ngay sau khi trả kết quả.
-                </div>
-              </div>
-
-              <div class="wb-accordion-item faq-entry">
-                <button type="button" class="wb-accordion-header" style="padding:13px 16px;" onclick="toggleAccordion(this)">
-                  <strong style="font-size:14.5px; color:#0f172a;">Làm thế nào để báo lỗi hoặc góp ý?</strong>
-                  <span>⌄</span>
-                </button>
-                <div class="wb-accordion-body" style="padding:12px 16px;">
-                  Bạn chỉ cần nhấn nút <strong>Gửi yêu cầu hỗ trợ</strong> bên cạnh hoặc chọn mục <strong>Gửi ý kiến phản hồi</strong> ở chân trang. Hệ thống sẽ tự động gửi thông tin trực tiếp về email hỗ trợ chính thức <strong>${OFFICIAL_SUPPORT_EMAIL}</strong>.
-                </div>
-              </div>
+            <div class="wb-field">
+              <label for="fb-email">${renderSvgIcon("mail", { size: 16 })}<span>Email liên hệ (tùy chọn)</span></label>
+              <input type="email" id="fb-email" class="wb-input" placeholder="ban@example.com">
             </div>
           </div>
 
-          <div style="border:1px solid #dbeafe; border-radius:16px; padding:24px; background:linear-gradient(135deg, #f8fbff 0%, #eef5ff 100%); display:flex; flex-direction:column; justify-content:center;">
-            <h3 style="margin:0 0 10px 0; font-size:20px; color:#0f172a; display:flex; align-items:center; gap:10px;">
-              <span style="color:var(--wb-blue);">🎧</span>
-              <span>Vẫn cần hỗ trợ?</span>
-            </h3>
-            <p style="font-size:14.5px; color:#334155; line-height:1.6; margin:0 0 18px 0;">
-              Nếu bạn không tìm thấy câu trả lời phù hợp, hãy liên hệ với chúng tôi để được hỗ trợ thêm. Mọi yêu cầu được chuyển trực tiếp tới hộp thư chính thức <strong>${OFFICIAL_SUPPORT_EMAIL}</strong>.
-            </p>
-            <div>
-              <button type="button" class="wb-btn-primary" onclick="switchView('feedback')">
-                <span>✉️</span>
-                <span>Gửi yêu cầu hỗ trợ</span>
-              </button>
-            </div>
+          <div class="wb-field" style="margin-top:14px;">
+            <label for="fb-title">${renderSvgIcon("text", { size: 16 })}<span>Tiêu đề *</span></label>
+            <input type="text" id="fb-title" class="wb-input" maxlength="200" required placeholder="Tóm tắt ngắn gọn nội dung phản hồi (3 – 200 ký tự)">
           </div>
-        </div>
+
+          <div class="wb-field" style="margin-top:14px;">
+            <label for="fb-message">${renderSvgIcon("feedback", { size: 16 })}<span>Nội dung chi tiết *</span></label>
+            <textarea id="fb-message" class="wb-textarea" rows="6" maxlength="2000" required placeholder="Mô tả chi tiết vấn đề, bước tái hiện hoặc đề xuất của bạn (10 – 2.000 ký tự)..."></textarea>
+            <small id="fb-char-count" style="color:var(--wb-muted);">0 / 2.000 ký tự</small>
+          </div>
+
+          <div class="wb-field" style="margin-top:14px;">
+            <label for="fb-file">${renderSvgIcon("attach", { size: 16 })}<span>Tệp đính kèm tùy chọn (JPG, JPEG, PNG, PDF — tối đa 10 MB)</span></label>
+            <input type="file" id="fb-file" class="wb-input" accept=".jpg,.jpeg,.png,.pdf">
+          </div>
+
+          <div style="margin-top:18px;display:flex;gap:10px;flex-wrap:wrap;">
+            <button type="button" id="btn-reset-fb" class="wb-btn">${renderSvgIcon("refresh", { size: 16 })}<span>Làm mới</span></button>
+            <button type="submit" id="btn-submit-fb" class="wb-btn wb-btn-primary">${renderSvgIcon("send", { size: 16 })}<span>Gửi phản hồi</span></button>
+          </div>
+          <div id="fb-status" class="wb-status" role="status"></div>
+        </form>
       </div>
     </section>
-
-    <!-- =================================================================== -->
-    <!-- GIAO DIỆN 8: TRANG GỬI Ý KIẾN PHẢN HỒI (image_449a5e.jpg)           -->
-    <!-- =================================================================== -->
-    <section id="view_feedback" class="wb-view-section">
-      <div class="wb-main-card">
-        <div style="margin-bottom:14px;">
-          <button type="button" class="wb-btn-outline" style="padding:6px 14px; border-radius:999px; font-size:13px;" onclick="switchView('help')">
-            ← Trợ giúp
-          </button>
-        </div>
-
-        <div class="wb-section-head">
-          <div class="wb-section-icon-box">💬</div>
-          <div>
-            <h2>Gửi ý kiến phản hồi</h2>
-            <p>Chia sẻ ý kiến, góp ý hoặc báo cáo vấn đề để chúng tôi cải thiện Word Bridge Translation tốt hơn.</p>
-          </div>
-        </div>
-
-        <div class="wb-feedback-grid">
-          <!-- Biểu mẫu bên trái -->
-          <form id="wbFeedbackForm" onsubmit="event.preventDefault(); submitFeedbackForm();" style="border:1px solid #e2e8f0; border-radius:16px; padding:22px; background:#ffffff;">
-            <div style="margin-bottom:16px;">
-              <label class="wb-field-label" for="wbFeedbackType">Loại phản hồi <span style="color:#dc2626;">*</span></label>
-              <div class="wb-select-box">
-                <span class="wb-select-icon">📢</span>
-                <select id="wbFeedbackType" class="wb-select-native" required>
-                  <option value="">Chọn loại phản hồi</option>
-                </select>
-              </div>
-            </div>
-
-            <div style="margin-bottom:16px;">
-              <label class="wb-field-label" for="wbFeedbackTitle">Tiêu đề <span style="color:#dc2626;">*</span></label>
-              <input
-                type="text"
-                id="wbFeedbackTitle"
-                class="wb-form-input"
-                maxlength="200"
-                required
-                placeholder="Nhập tiêu đề ngắn gọn (ví dụ: Lỗi khi dịch tài liệu)..."
-              />
-            </div>
-
-            <div style="margin-bottom:16px;">
-              <label class="wb-field-label" for="wbFeedbackMessage">Nội dung chi tiết <span style="color:#dc2626;">*</span></label>
-              <div style="position:relative;">
-                <textarea
-                  id="wbFeedbackMessage"
-                  class="wb-form-input"
-                  rows="5"
-                  maxlength="2000"
-                  required
-                  placeholder="Mô tả cụ thể ý kiến, góp ý hoặc vấn đề bạn gặp phải..."
-                  oninput="updateFeedbackCharCounter()"
-                  style="resize:vertical; padding-bottom:26px;"
-                ></textarea>
-                <span id="wbFeedbackCharCount" style="position:absolute; right:12px; bottom:8px; font-size:12px; color:#64748b;">0 / 2.000</span>
-              </div>
-            </div>
-
-            <div style="margin-bottom:16px;">
-              <label class="wb-field-label" for="wbFeedbackContact">Email liên hệ nhận phản hồi (tùy chọn – dùng cho Reply-To)</label>
-              <input
-                type="email"
-                id="wbFeedbackContact"
-                class="wb-form-input"
-                placeholder="Nhập email của bạn nếu cần đội ngũ Word Bridge phản hồi lại (không bắt buộc)..."
-              />
-            </div>
-
-            <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:20px;">
-              <button type="button" class="wb-btn-outline" style="padding:9px 16px; font-size:13.5px;" onclick="document.getElementById('wbFeedbackFileInput').click()">
-                📎 Đính kèm tệp (tùy chọn)
-              </button>
-              <span id="wbFeedbackFileLabel" style="font-size:13px; color:#64748b;">
-                Hỗ trợ: JPG, JPEG, PNG, PDF &nbsp;|&nbsp; Dung lượng tối đa: 10 MB
-              </span>
-              <input
-                type="file"
-                id="wbFeedbackFileInput"
-                accept=".jpg,.jpeg,.png,.pdf,image/jpeg,image/png,application/pdf"
-                style="display:none"
-                onchange="onFeedbackFilePicked(this.files[0])"
-              />
-            </div>
-
-            <div style="display:flex; justify-content:center; gap:14px; flex-wrap:wrap;">
-              <button type="button" class="wb-btn-outline" onclick="resetFeedbackForm()">
-                ↻ Làm mới
-              </button>
-              <button type="submit" class="wb-btn-primary" id="wbFeedbackSubmitBtn">
-                <span>✈️</span>
-                <span>Gửi phản hồi</span>
-              </button>
-            </div>
-          </form>
-
-          <!-- Khung hướng dẫn bên phải -->
-          <div style="border:1px solid #e2e8f0; border-radius:16px; padding:22px; background:#f8fbff;">
-            <h3 style="margin:0 0 12px 0; font-size:17px; color:#0f172a; display:flex; align-items:center; gap:8px;">
-              <span>🎯</span>
-              <span>Bạn có thể phản hồi về</span>
-            </h3>
-            <ul class="wb-check-list" style="margin-top:0;">
-              <li><span class="wb-green-tick">✓</span><span>Chất lượng và độ chính xác của bản dịch.</span></li>
-              <li><span class="wb-green-tick">✓</span><span>Trải nghiệm giao diện và khả năng sử dụng.</span></li>
-              <li><span class="wb-green-tick">✓</span><span>Ngôn ngữ cần bổ sung.</span></li>
-              <li><span class="wb-green-tick">✓</span><span>Định dạng tài liệu cần hỗ trợ.</span></li>
-              <li><span class="wb-green-tick">✓</span><span>Tính năng mới mong muốn.</span></li>
-              <li><span class="wb-green-tick">✓</span><span>Báo cáo lỗi kỹ thuật hoặc nội dung chưa phù hợp.</span></li>
-            </ul>
-
-            <hr style="border:none; border-top:1px solid #e2e8f0; margin:18px 0;" />
-
-            <h3 style="margin:0 0 10px 0; font-size:17px; color:#0f172a; display:flex; align-items:center; gap:8px;">
-              <span style="color:var(--wb-blue);">ⓘ</span>
-              <span>Lưu ý</span>
-            </h3>
-            <ul style="margin:0; padding-left:18px; font-size:13.5px; color:#334155; line-height:1.65;">
-              <li>Vui lòng mô tả rõ ràng, cụ thể và ngắn gọn.</li>
-              <li>Có thể đính kèm ảnh chụp màn hình (nếu cần).</li>
-              <li>Không gửi mật khẩu, mã xác thực hoặc thông tin cá nhân nhạy cảm.</li>
-              <li>Mọi ý kiến đều được tự động chuyển trực tiếp tới hộp thư chính thức <strong>${OFFICIAL_SUPPORT_EMAIL}</strong> để ghi nhận và xem xét.</li>
-            </ul>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- KHU VỰC THÔNG BÁO TRẠNG THÁI CHUNG -->
-    <div id="wbGlobalToast" class="wb-toast" role="status" aria-live="polite"></div>
   </main>
 
-  <!-- FOOTER THỐNG NHẤT TOÀN WEBSITE (ĐỐI CHIẾU 08 ẢNH) -->
   <footer class="wb-footer">
     <div class="wb-footer-inner">
-      <a href="/" class="wb-brand-group" onclick="event.preventDefault(); switchView('text');">
-        <div class="wb-brand-logo" style="height:34px;">
-          <img src="/assets/logo.jpg" alt="WORD BRIDGE" style="height:34px;" onerror="this.style.display='none'; this.parentElement.innerHTML=${JSON.stringify(WORD_BRIDGE_LOGO_SVG)};" />
-        </div>
-        <div style="display:flex; flex-direction:column;">
-          <strong style="font-size:13px; color:#0f172a;">WORD BRIDGE</strong>
-          <span style="font-size:11.5px; color:#64748b;">Dịch thuật Word Bridge</span>
-        </div>
-      </a>
-
-      <div class="wb-footer-links">
-        <a href="/gioi-thieu" class="wb-footer-link" id="footBtn_about" onclick="event.preventDefault(); switchView('about');">
-          <span>ⓘ</span>
-          <span>Giới thiệu về Word Bridge Translation</span>
-        </a>
-        <a href="/quyen-rieng-tu" class="wb-footer-link" id="footBtn_privacy" onclick="event.preventDefault(); switchView('privacy');">
-          <span>🛡️</span>
-          <span>Quyền riêng tư và Điều khoản</span>
-        </a>
-        <a href="/tro-giup" class="wb-footer-link" id="footBtn_help" onclick="event.preventDefault(); switchView('help');">
-          <span>❓</span>
-          <span>Trợ giúp</span>
-        </a>
-        <a href="/phan-hoi" class="wb-footer-link" id="footBtn_feedback" onclick="event.preventDefault(); switchView('feedback');">
-          <span>💬</span>
-          <span>Gửi ý kiến phản hồi</span>
-        </a>
+      <div class="wb-footer-brand">
+        ${LOGO_HORIZONTAL_LIGHT_SVG}
+        <span style="font-size:0.86rem;color:var(--wb-muted);">Dịch thuật Word Bridge – TRANS · Hệ sinh thái Word Bridge</span>
       </div>
-
-      <div style="display:flex; align-items:center; gap:8px; font-size:13.5px; font-weight:600; color:#334155;">
-        <span>🌐</span>
-        <span>Tiếng Việt</span>
-        <span>⌄</span>
+      <div class="wb-footer-links" aria-label="Liên kết chân trang">
+        <a href="/gioi-thieu" data-view="about">${renderSvgIcon("info", { size: 16 })}<span>Giới thiệu về Word Bridge Translation</span></a>
+        <a href="/quyen-rieng-tu" data-view="privacy">${renderSvgIcon("shield", { size: 16 })}<span>Quyền riêng tư và Điều khoản</span></a>
+        <a href="/tro-giup" data-view="help">${renderSvgIcon("help", { size: 16 })}<span>Trợ giúp</span></a>
+        <a href="/phan-hoi" data-view="feedback">${renderSvgIcon("feedback", { size: 16 })}<span>Gửi ý kiến phản hồi</span></a>
       </div>
+    </div>
+    <div class="wb-footer-meta">
+      <span>© ${new Date().getFullYear()} Word Bridge Ecosystem · Dịch thuật Word Bridge (TRANS) · Hỗ trợ: wordbridge.education@gmail.com</span>
+      <span>Tổng lượt truy cập: <strong id="wb-total-accesses">${Number(totalAccesses || 0).toLocaleString("vi-VN")}</strong></span>
     </div>
   </footer>
 
   <script>
-    const WB_LANGUAGES = ${languagesJson};
-    const WB_DOMAINS = ${domainsJson};
-    const WB_FEEDBACK_TYPES = ${feedbackTypesJson};
-    const INITIAL_VIEW = ${JSON.stringify(safeView)};
+    (function() {
+      const LANGUAGES = ${safeLanguagesJson};
+      const DOMAINS = ${safeDomainsJson};
+      const VIEW_TO_PATH = {
+        text: "/dich-van-ban",
+        document: "/dich-tai-lieu",
+        website: "/dich-trang-web",
+        image: "/dich-hinh-anh",
+        about: "/gioi-thieu",
+        privacy: "/quyen-rieng-tu",
+        help: "/tro-giup",
+        feedback: "/phan-hoi"
+      };
+      const PATH_TO_VIEW = {
+        "/": "text",
+        "/dich-van-ban": "text",
+        "/dich-tai-lieu": "document",
+        "/dich-trang-web": "website",
+        "/dich-hinh-anh": "image",
+        "/gioi-thieu": "about",
+        "/quyen-rieng-tu": "privacy",
+        "/tro-giup": "help",
+        "/phan-hoi": "feedback"
+      };
 
-    const VIEW_TO_PATH = {
-      text: "/dich-van-ban",
-      document: "/dich-tai-lieu",
-      website: "/dich-trang-web",
-      image: "/dich-hinh-anh",
-      about: "/gioi-thieu",
-      privacy: "/quyen-rieng-tu",
-      help: "/tro-giup",
-      feedback: "/phan-hoi"
-    };
+      let selectedDocFile = null;
+      let lastDocDownload = null;
+      let selectedImgFile = null;
+      let lastImgResultText = "";
 
-    let appState = {
-      currentView: INITIAL_VIEW,
-      selectedDocFile: null,
-      selectedOcrFile: null,
-      selectedFeedbackFile: null,
-      lastDocBlobUrl: null,
-      lastTranslatedWebsiteHtml: "",
-      lastOcrTranslatedText: ""
-    };
+      function byId(id) { return document.getElementById(id); }
 
-    function populateAllSelects() {
-      const sourceIds = ["wbTextSourceLang", "wbDocSourceLang", "wbWebSourceLang", "wbOcrSourceLang"];
-      const targetIds = ["wbTextTargetLang", "wbDocTargetLang", "wbWebTargetLang", "wbOcrTargetLang"];
-      const domainIds = ["wbTextDomain", "wbDocDomain", "wbOcrDomain"];
-
-      sourceIds.forEach((id) => {
-        const el = document.getElementById(id);
+      function setStatus(id, type, message) {
+        const el = byId(id);
         if (!el) return;
-        el.innerHTML = "";
-        WB_LANGUAGES.forEach((l) => {
-          const opt = document.createElement("option");
-          opt.value = l.code;
-          opt.textContent = l.code === "auto" ? "Tự động nhận diện" : l.name + " (" + l.nativeName + ")";
-          if (l.code === "auto") opt.selected = true;
-          el.appendChild(opt);
-        });
-      });
+        if (!message) { el.className = "wb-status"; el.textContent = ""; return; }
+        el.className = "wb-status is-visible" + (type === "error" ? " is-error" : type === "success" ? " is-success" : "");
+        el.textContent = message;
+      }
 
-      targetIds.forEach((id) => {
-        const el = document.getElementById(id);
-        if (!el) return;
-        el.innerHTML = "";
-        WB_LANGUAGES.filter((l) => l.code !== "auto").forEach((l) => {
-          const opt = document.createElement("option");
-          opt.value = l.code;
-          opt.textContent = l.name + " (" + l.nativeName + ")";
-          if (l.code === "vi") opt.selected = true;
-          el.appendChild(opt);
-        });
-      });
+      function populateSelects() {
+        const srcIds = ["text-src-lang", "doc-src-lang", "web-src-lang", "img-src-lang"];
+        const tgtIds = ["text-tgt-lang", "doc-tgt-lang", "web-tgt-lang", "img-tgt-lang"];
+        const domIds = ["text-domain", "doc-domain", "web-domain", "img-domain"];
 
-      domainIds.forEach((id) => {
-        const el = document.getElementById(id);
-        if (!el) return;
-        el.innerHTML = "";
-        WB_DOMAINS.forEach((d) => {
-          const opt = document.createElement("option");
-          opt.value = d.id;
-          opt.textContent = d.name;
-          if (d.id === "general") opt.selected = true;
-          el.appendChild(opt);
+        srcIds.forEach(function(id) {
+          const sel = byId(id);
+          if (!sel) return;
+          sel.innerHTML = '<option value="auto">Tự động nhận diện</option>' +
+            LANGUAGES.map(function(l) { return '<option value="' + l.code + '">' + l.nameVi + ' (' + l.nativeName + ')</option>'; }).join("");
+          sel.value = "auto";
         });
-      });
 
-      const fbSelect = document.getElementById("wbFeedbackType");
-      if (fbSelect) {
-        WB_FEEDBACK_TYPES.forEach((t) => {
-          const opt = document.createElement("option");
-          opt.value = t.id;
-          opt.textContent = t.label;
-          fbSelect.appendChild(opt);
+        tgtIds.forEach(function(id) {
+          const sel = byId(id);
+          if (!sel) return;
+          sel.innerHTML = LANGUAGES.map(function(l) { return '<option value="' + l.code + '">' + l.nameVi + ' (' + l.nativeName + ')</option>'; }).join("");
+          sel.value = "vi";
+        });
+
+        domIds.forEach(function(id) {
+          const sel = byId(id);
+          if (!sel) return;
+          sel.innerHTML = DOMAINS.map(function(d) { return '<option value="' + d.id + '">' + d.nameVi + '</option>'; }).join("");
+          sel.value = "general";
         });
       }
-    }
 
-    function switchView(viewName, skipPushState) {
-      const target = VIEW_TO_PATH[viewName] ? viewName : "text";
-      appState.currentView = target;
-
-      document.querySelectorAll(".wb-view-section").forEach((sec) => {
-        sec.classList.toggle("active", sec.id === "view_" + target);
-      });
-
-      ["text", "document", "website", "image", "privacy", "help"].forEach((navKey) => {
-        const btn = document.getElementById("navBtn_" + navKey);
-        if (btn) {
-          const isMatch = navKey === target || (navKey === "help" && target === "feedback");
-          btn.classList.toggle("active", isMatch);
+      function switchView(viewName, skipPush) {
+        document.querySelectorAll(".wb-view").forEach(function(el) {
+          el.classList.toggle("is-active", el.id === "view-" + viewName);
+        });
+        document.querySelectorAll(".wb-nav-link").forEach(function(el) {
+          const active = el.getAttribute("data-view") === viewName;
+          el.classList.toggle("is-active", active);
+          el.setAttribute("aria-current", active ? "page" : "false");
+        });
+        if (!skipPush && VIEW_TO_PATH[viewName]) {
+          window.history.pushState({ view: viewName }, "", VIEW_TO_PATH[viewName]);
         }
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }
+
+      document.addEventListener("click", function(evt) {
+        const link = evt.target.closest("a[data-view]");
+        if (!link) return;
+        evt.preventDefault();
+        switchView(link.getAttribute("data-view"), false);
       });
 
-      ["about", "privacy", "help", "feedback"].forEach((footKey) => {
-        const fBtn = document.getElementById("footBtn_" + footKey);
-        if (fBtn) fBtn.classList.toggle("active", footKey === target);
+      window.addEventListener("popstate", function() {
+        const v = PATH_TO_VIEW[window.location.pathname] || "text";
+        switchView(v, true);
       });
 
-      hideToast();
-      if (!skipPushState && window.history && window.history.pushState) {
-        const newPath = target === "text" ? "/" : VIEW_TO_PATH[target];
-        window.history.pushState({ view: target }, "", newPath);
-      }
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    }
-
-    window.addEventListener("popstate", (evt) => {
-      const v = evt.state?.view || "text";
-      switchView(v, true);
-    });
-
-    function toggleLauncherMenu(evt) {
-      evt.stopPropagation();
-      document.getElementById("wbLauncherMenu").classList.toggle("open");
-    }
-    document.addEventListener("click", () => {
-      const menu = document.getElementById("wbLauncherMenu");
-      if (menu) menu.classList.remove("open");
-    });
-
-    function showToast(type, msg) {
-      const box = document.getElementById("wbGlobalToast");
-      box.className = "wb-toast show wb-toast-" + type;
-      box.textContent = msg;
-    }
-
-    function hideToast() {
-      const box = document.getElementById("wbGlobalToast");
-      box.className = "wb-toast";
-      box.textContent = "";
-    }
-
-    function swapLangPair(sourceId, targetId, isTextView) {
-      const srcEl = document.getElementById(sourceId);
-      const tgtEl = document.getElementById(targetId);
-      let srcVal = srcEl.value;
-      const tgtVal = tgtEl.value;
-      if (srcVal === "auto") {
-        srcVal = tgtVal === "vi" ? "en" : "vi";
-      }
-      srcEl.value = tgtVal;
-      tgtEl.value = srcVal;
-
-      if (isTextView) {
-        const outEl = document.getElementById("wbTargetOutput");
-        if (!outEl.classList.contains("placeholder") && outEl.textContent.trim()) {
-          document.getElementById("wbSourceInput").value = outEl.textContent;
-          onTextInputChanged();
-        }
-      }
-    }
-
-    function onTextInputChanged() {
-      const text = document.getElementById("wbSourceInput").value;
-      const chars = Array.from(text).length;
-      const words = text.trim() ? text.trim().split(/\\s+/).length : 0;
-      document.getElementById("wbSourceCounters").innerHTML =
-        chars.toLocaleString("vi-VN") + " ký tự &nbsp;|&nbsp; " + words.toLocaleString("vi-VN") + " từ";
-    }
-
-    function clearTextTranslation() {
-      document.getElementById("wbSourceInput").value = "";
-      document.getElementById("wbSourceCounters").innerHTML = "0 ký tự &nbsp;|&nbsp; 0 từ";
-      document.getElementById("wbDetectedLangInfo").textContent = "";
-      const out = document.getElementById("wbTargetOutput");
-      out.textContent = "Bản dịch sẽ hiển thị tại đây...";
-      out.classList.add("placeholder");
-      hideToast();
-    }
-
-    async function executeTextTranslation() {
-      const text = document.getElementById("wbSourceInput").value;
-      if (!text.trim()) {
-        showToast("error", "Vui lòng nhập nội dung văn bản cần dịch.");
-        return;
-      }
-      hideToast();
-      const out = document.getElementById("wbTargetOutput");
-      out.classList.remove("placeholder");
-      out.textContent = "Đang dịch nội dung...";
-
-      try {
-        const res = await fetch("/api/translate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          cache: "no-store",
-          body: JSON.stringify({
-            text,
-            sourceLang: document.getElementById("wbTextSourceLang").value,
-            targetLang: document.getElementById("wbTextTargetLang").value,
-            domain: document.getElementById("wbTextDomain").value
-          })
+      function wireSwap(btnId, srcId, tgtId) {
+        const btn = byId(btnId);
+        if (!btn) return;
+        btn.addEventListener("click", function() {
+          const s = byId(srcId), t = byId(tgtId);
+          if (!s || !t || s.value === "auto") return;
+          const tmp = s.value;
+          s.value = t.value;
+          t.value = tmp;
         });
-        const data = await res.json();
-        if (!res.ok || !data.ok) {
-          out.textContent = "Bản dịch sẽ hiển thị tại đây...";
-          out.classList.add("placeholder");
-          showToast("error", data.message || "Không thể dịch văn bản.");
+      }
+
+      function fileToBase64(file) {
+        return new Promise(function(resolve, reject) {
+          const reader = new FileReader();
+          reader.onload = function() {
+            const res = String(reader.result || "");
+            const idx = res.indexOf(",");
+            resolve(idx >= 0 ? res.slice(idx + 1) : res);
+          };
+          reader.onerror = function() { reject(new Error("Không thể đọc tệp.")); };
+          reader.readAsDataURL(file);
+        });
+      }
+
+      // 1. Dịch văn bản
+      const textInput = byId("text-input");
+      if (textInput) {
+        textInput.addEventListener("input", function() {
+          byId("text-char-count").textContent = textInput.value.length.toLocaleString("vi-VN") + " / 15.000 ký tự";
+        });
+      }
+      byId("btn-clear-text").addEventListener("click", function() {
+        textInput.value = "";
+        byId("text-char-count").textContent = "0 / 15.000 ký tự";
+        const out = byId("text-output");
+        out.textContent = "Bản dịch sẽ hiển thị tại đây.";
+        out.classList.add("wb-output-placeholder");
+        byId("text-detected-badge").textContent = "";
+        byId("text-provider-badge").textContent = "";
+        byId("text-stats-meta").textContent = "";
+        setStatus("text-status", "", "");
+      });
+
+      byId("btn-run-text").addEventListener("click", async function() {
+        const text = textInput.value;
+        if (!text.trim()) {
+          setStatus("text-status", "error", "Vui lòng nhập văn bản cần dịch.");
           return;
         }
-        out.textContent = data.translatedText;
-        out.dir = data.targetLanguage?.dir || "ltr";
-        document.getElementById("wbDetectedLangInfo").textContent =
-          data.sourceLanguage?.autoDetected
-            ? "• Đã nhận diện: " + (data.sourceLanguage?.name || data.sourceLanguage?.resolved)
-            : "";
-        document.getElementById("wbSourceCounters").innerHTML =
-          (data.stats?.source?.charCount || 0).toLocaleString("vi-VN") +
-          " ký tự &nbsp;|&nbsp; " +
-          (data.stats?.source?.wordCount || 0).toLocaleString("vi-VN") +
-          " từ";
-        document.getElementById("wbTargetDomainMeta").textContent =
-          "Lĩnh vực: " + (data.domain?.name || "Tổng quát") + " · Zero User Data Storage";
-      } catch (_) {
-        showToast("error", "Lỗi kết nối máy chủ dịch thuật. Vui lòng thử lại.");
-      }
-    }
+        const btn = byId("btn-run-text");
+        btn.disabled = true;
+        setStatus("text-status", "info", "Đang xử lý dịch văn bản trên bộ nhớ tạm...");
+        try {
+          const res = await fetch("/api/v1/translate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              text: text,
+              sourceLang: byId("text-src-lang").value,
+              targetLang: byId("text-tgt-lang").value,
+              domain: byId("text-domain").value
+            })
+          });
+          const data = await res.json();
+          if (!res.ok || !data.ok) {
+            setStatus("text-status", "error", data.message || "Không thể dịch văn bản lúc này.");
+          } else {
+            const out = byId("text-output");
+            out.textContent = data.translatedText;
+            out.classList.remove("wb-output-placeholder");
+            if (data.detectedLanguage) {
+              byId("text-detected-badge").textContent = "Nhận diện: " + data.detectedLanguage.nameVi;
+            }
+            byId("text-provider-badge").textContent = data.provider || "";
+            byId("text-stats-meta").textContent = (data.stats ? data.stats.words + " từ · " : "") + (data.durationMs || 0) + " ms";
+            setStatus("text-status", "success", "Đã dịch xong trên bộ nhớ tạm.");
+          }
+        } catch (_) {
+          setStatus("text-status", "error", "Lỗi kết nối tới máy chủ API dịch thuật.");
+        } finally {
+          btn.disabled = false;
+        }
+      });
 
-    async function copyTargetText() {
-      const out = document.getElementById("wbTargetOutput");
-      if (out.classList.contains("placeholder") || !out.textContent.trim()) {
-        showToast("info", "Chưa có kết quả dịch để sao chép.");
-        return;
-      }
-      try {
-        await navigator.clipboard.writeText(out.textContent);
-        showToast("success", "Đã sao chép bản dịch vào clipboard.");
-      } catch (_) {}
-    }
+      byId("btn-copy-text").addEventListener("click", async function() {
+        const out = byId("text-output");
+        if (out.classList.contains("wb-output-placeholder") || !out.textContent.trim()) return;
+        try {
+          await navigator.clipboard.writeText(out.textContent);
+          setStatus("text-status", "success", "Đã sao chép bản dịch vào bộ nhớ tạm.");
+        } catch (_) {
+          setStatus("text-status", "error", "Trình duyệt không cho phép sao chép tự động.");
+        }
+      });
 
-    function toggleTargetFullscreen() {
-      const panel = document.getElementById("wbTextTargetPanel");
-      if (document.fullscreenElement) {
-        document.exitFullscreen();
-      } else if (panel.requestFullscreen) {
-        panel.requestFullscreen();
-      }
-    }
+      byId("btn-expand-text").addEventListener("click", function() {
+        byId("text-output-pane").classList.toggle("wb-fullscreen");
+      });
 
-    function speakTextContent(side) {
-      if (!("speechSynthesis" in window)) {
-        showToast("info", "Trình duyệt của bạn không hỗ trợ phát âm giọng nói.");
-        return;
-      }
-      const text =
-        side === "source"
-          ? document.getElementById("wbSourceInput").value.trim()
-          : document.getElementById("wbTargetOutput").classList.contains("placeholder")
-            ? ""
-            : document.getElementById("wbTargetOutput").textContent.trim();
-      if (!text) return;
-      window.speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(text);
-      const code =
-        side === "source"
-          ? document.getElementById("wbTextSourceLang").value
-          : document.getElementById("wbTextTargetLang").value;
-      const info = WB_LANGUAGES.find((l) => l.code === code);
-      u.lang = (info && info.speechLang) || (code === "auto" ? "vi-VN" : code);
-      window.speechSynthesis.speak(u);
-    }
-
-    function arrayBufferToBase64(buffer) {
-      const bytes = new Uint8Array(buffer);
-      let binary = "";
-      const chunk = 0x8000;
-      for (let i = 0; i < bytes.length; i += chunk) {
-        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
-      }
-      return btoa(binary);
-    }
-
-    function onDropFile(evt, mode) {
-      evt.preventDefault();
-      evt.currentTarget.classList.remove("dragover");
-      const file = evt.dataTransfer?.files?.[0];
-      if (!file) return;
-      if (mode === "document") onDocFilePicked(file);
-      else if (mode === "image") onOcrFilePicked(file);
-    }
-
-    function onDocFilePicked(file) {
-      if (!file) return;
-      appState.selectedDocFile = file;
-      document.getElementById("wbDocSelectedLabel").textContent =
-        "Đã chọn tệp: " + file.name + " (" + (file.size / 1024).toFixed(1) + " KB)";
-      hideToast();
-    }
-
-    async function executeDocumentTranslation() {
-      const file = appState.selectedDocFile;
-      if (!file) {
-        showToast("error", "Vui lòng chọn tệp tài liệu cần dịch (PDF, DOCX, DOC, PPTX, XLSX, CSV, TXT).");
-        return;
-      }
-      hideToast();
-      showToast("info", "Đang xử lý và dịch tài liệu trên bộ nhớ tạm...");
-      try {
-        const base64Content = arrayBufferToBase64(await file.arrayBuffer());
-        const res = await fetch("/api/document/translate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          cache: "no-store",
-          body: JSON.stringify({
-            filename: file.name,
-            base64Content,
-            sourceLang: document.getElementById("wbDocSourceLang").value,
-            targetLang: document.getElementById("wbDocTargetLang").value,
-            domain: document.getElementById("wbDocDomain").value
-          })
-        });
-        const data = await res.json();
-        if (!res.ok || !data.ok) {
-          showToast("error", data.message || "Không thể dịch tài liệu này.");
+      function speakText(text, langCode) {
+        if (!text || !text.trim()) return;
+        if (!("speechSynthesis" in window)) {
+          setStatus("text-status", "error", "Trình duyệt hiện tại không hỗ trợ phát âm.");
           return;
         }
-        if (appState.lastDocBlobUrl) URL.revokeObjectURL(appState.lastDocBlobUrl);
-        const bin = atob(data.downloadBase64);
+        window.speechSynthesis.cancel();
+        const utt = new SpeechSynthesisUtterance(text.slice(0, 1000));
+        if (langCode && langCode !== "auto") utt.lang = langCode;
+        window.speechSynthesis.speak(utt);
+      }
+      byId("btn-speak-src").addEventListener("click", function() { speakText(textInput.value, byId("text-src-lang").value); });
+      byId("btn-speak-tgt").addEventListener("click", function() {
+        const out = byId("text-output");
+        if (!out.classList.contains("wb-output-placeholder")) speakText(out.textContent, byId("text-tgt-lang").value);
+      });
+
+      // 2. Dịch tài liệu
+      function wireDropzone(zoneId, inputId, onFile) {
+        const zone = byId(zoneId), inp = byId(inputId);
+        zone.addEventListener("click", function() { inp.click(); });
+        zone.addEventListener("keydown", function(e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); inp.click(); } });
+        zone.addEventListener("dragover", function(e) { e.preventDefault(); zone.classList.add("is-drag"); });
+        zone.addEventListener("dragleave", function() { zone.classList.remove("is-drag"); });
+        zone.addEventListener("drop", function(e) {
+          e.preventDefault(); zone.classList.remove("is-drag");
+          if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]) onFile(e.dataTransfer.files[0]);
+        });
+        inp.addEventListener("change", function() { if (inp.files && inp.files[0]) onFile(inp.files[0]); });
+      }
+
+      wireDropzone("doc-dropzone", "doc-file-input", function(file) {
+        selectedDocFile = file;
+        byId("doc-file-label").textContent = "Đã chọn: " + file.name + " (" + (file.size / 1024).toFixed(1) + " KB)";
+        byId("btn-download-doc").style.display = "none";
+        setStatus("doc-status", "", "");
+      });
+
+      byId("btn-run-doc").addEventListener("click", async function() {
+        if (!selectedDocFile) { setStatus("doc-status", "error", "Vui lòng chọn tệp tài liệu trước."); return; }
+        const btn = byId("btn-run-doc");
+        btn.disabled = true;
+        setStatus("doc-status", "info", "Đang trích xuất và dịch tài liệu trên RAM...");
+        try {
+          const b64 = await fileToBase64(selectedDocFile);
+          const res = await fetch("/api/v1/translate/document", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              filename: selectedDocFile.name,
+              fileBase64: b64,
+              sourceLang: byId("doc-src-lang").value,
+              targetLang: byId("doc-tgt-lang").value,
+              domain: byId("doc-domain").value
+            })
+          });
+          const data = await res.json();
+          if (!res.ok || !data.ok) {
+            setStatus("doc-status", "error", data.message || "Không thể dịch tài liệu.");
+          } else {
+            lastDocDownload = data;
+            byId("btn-download-doc").style.display = "inline-flex";
+            byId("doc-preview-wrap").style.display = "block";
+            byId("doc-preview").textContent = data.previewText || "";
+            setStatus("doc-status", "success", data.formatNotice || "Đã dịch tài liệu thành công.");
+          }
+        } catch (_) {
+          setStatus("doc-status", "error", "Lỗi kết nối khi dịch tài liệu.");
+        } finally {
+          btn.disabled = false;
+        }
+      });
+
+      byId("btn-download-doc").addEventListener("click", function() {
+        if (!lastDocDownload || !lastDocDownload.outputBase64) return;
+        const bin = atob(lastDocDownload.outputBase64);
         const bytes = new Uint8Array(bin.length);
         for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-        const blobUrl = URL.createObjectURL(new Blob([bytes], { type: data.mimeType }));
-        appState.lastDocBlobUrl = blobUrl;
-
-        document.getElementById("wbDocOutName").textContent = "Tài liệu kết quả: " + data.outputFilename;
-        document.getElementById("wbDocOutMeta").textContent =
-          "Định dạng: " + data.format.toUpperCase() + " · Dung lượng: " + data.outputByteLength.toLocaleString("vi-VN") + " bytes";
-        document.getElementById("wbDocNoticeText").textContent = data.limitationsNotice || "";
-        document.getElementById("wbDocSourcePreview").textContent = data.sourcePreview || "";
-        document.getElementById("wbDocTargetPreview").textContent = data.translatedPreview || "";
-
-        document.getElementById("wbDocDownloadTrigger").onclick = () => {
-          const a = document.createElement("a");
-          a.href = blobUrl;
-          a.download = data.outputFilename;
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-        };
-        document.getElementById("wbDocResultBox").style.display = "block";
-        showToast("success", "Đã dịch tài liệu thành công! Bạn có thể tải tài liệu đã dịch về máy.");
-      } catch (_) {
-        showToast("error", "Phát sinh lỗi khi xử lý tài liệu.");
-      }
-    }
-
-    async function executeWebsiteTranslation() {
-      const url = document.getElementById("wbWebsiteUrlInput").value.trim();
-      if (!url) {
-        showToast("error", "Vui lòng nhập địa chỉ URL trang web cần dịch.");
-        return;
-      }
-      hideToast();
-      showToast("info", "Đang kiểm tra bảo mật chống SSRF và dịch nội dung trang web...");
-      try {
-        const res = await fetch("/api/website/translate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          cache: "no-store",
-          body: JSON.stringify({
-            url,
-            sourceLang: document.getElementById("wbWebSourceLang").value,
-            targetLang: document.getElementById("wbWebTargetLang").value
-          })
-        });
-        const data = await res.json();
-        if (!res.ok || !data.ok) {
-          showToast("error", data.message || "Không thể dịch trang web này.");
-          return;
-        }
-        appState.lastTranslatedWebsiteHtml = data.translatedHtml;
-        document.getElementById("wbWebResultTitle").textContent = "Đã dịch trang web: " + data.url;
-        document.getElementById("wbWebResultMeta").textContent =
-          "Ngôn ngữ nguồn: " +
-          (data.sourceLanguage?.name || data.sourceLanguage?.resolved) +
-          " → " +
-          (data.targetLanguage?.name || data.targetLanguage?.code) +
-          " · Đã dịch " +
-          data.translatedNodeCount +
-          " thành phần nội dung";
-
-        const frame = document.getElementById("wbWebPreviewFrame");
-        frame.srcdoc = data.translatedHtml;
-
-        document.getElementById("wbOpenTranslatedWebBtn").onclick = () => {
-          const blob = new Blob([appState.lastTranslatedWebsiteHtml], { type: "text/html; charset=utf-8" });
-          const blobUrl = URL.createObjectURL(blob);
-          window.open(blobUrl, "_blank", "noopener");
-        };
-
-        document.getElementById("wbWebsiteResultBox").style.display = "block";
-        showToast("success", "Đã dịch trang web thành công!");
-      } catch (_) {
-        showToast("error", "Không thể xử lý trang web được yêu cầu.");
-      }
-    }
-
-    function onOcrFilePicked(file) {
-      if (!file) return;
-      appState.selectedOcrFile = file;
-      document.getElementById("wbOcrSelectedLabel").textContent =
-        "Đã chọn ảnh: " + file.name + " (" + (file.size / 1024).toFixed(1) + " KB)";
-      hideToast();
-    }
-
-    async function executeOcrTranslation() {
-      const file = appState.selectedOcrFile;
-      if (!file) {
-        showToast("error", "Vui lòng chọn hình ảnh cần dịch (JPG, JPEG, PNG, WEBP).");
-        return;
-      }
-      hideToast();
-      showToast("info", "Đang nhận diện văn bản trong ảnh và dịch thuật...");
-      try {
-        const base64Content = arrayBufferToBase64(await file.arrayBuffer());
-        const res = await fetch("/api/ocr/translate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          cache: "no-store",
-          body: JSON.stringify({
-            filename: file.name,
-            base64Content,
-            sourceLang: document.getElementById("wbOcrSourceLang").value,
-            targetLang: document.getElementById("wbOcrTargetLang").value,
-            domain: document.getElementById("wbOcrDomain").value
-          })
-        });
-        const data = await res.json();
-        if (!res.ok || !data.ok) {
-          showToast("error", data.message || "Không thể nhận diện văn bản từ hình ảnh này.");
-          return;
-        }
-        appState.lastOcrTranslatedText = data.translatedText;
-        document.getElementById("wbOcrSourceText").textContent = data.extractedText;
-        document.getElementById("wbOcrTargetText").textContent = data.translatedText;
-        document.getElementById("wbOcrResultBox").style.display = "block";
-        showToast("success", "Đã nhận diện và dịch nội dung hình ảnh thành công!");
-      } catch (_) {
-        showToast("error", "Lỗi khi xử lý nhận diện hình ảnh.");
-      }
-    }
-
-    async function copyOcrResult() {
-      if (!appState.lastOcrTranslatedText) return;
-      try {
-        await navigator.clipboard.writeText(appState.lastOcrTranslatedText);
-        showToast("success", "Đã sao chép bản dịch hình ảnh.");
-      } catch (_) {}
-    }
-
-    function downloadOcrResultTxt() {
-      if (!appState.lastOcrTranslatedText) return;
-      const blob = new Blob([appState.lastOcrTranslatedText], { type: "text/plain; charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "wordbridge-image-translation.txt";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-    }
-
-    function toggleAccordion(btnEl) {
-      const item = btnEl.closest(".wb-accordion-item");
-      if (item) item.classList.toggle("open");
-    }
-
-    const HELP_TOPICS_CONTENT = {
-      guides: {
-        title: "1. Hướng dẫn sử dụng 04 cơ chế dịch thuật",
-        html: "<ul><li><strong>Dịch văn bản:</strong> Nhập văn bản trực tiếp hoặc dán nội dung (tối đa 15.000 ký tự), chọn cặp ngôn ngữ và lĩnh vực rồi nhấn Dịch.</li><li><strong>Dịch tài liệu:</strong> Tải tệp PDF, DOCX, DOC, PPTX, XLSX, CSV hoặc TXT (tối đa 50 MB) để dịch và tải ngay tệp kết quả.</li><li><strong>Dịch trang web:</strong> Nhập URL trang web công khai (http/https) để dịch toàn bộ trang giữ nguyên bố cục.</li><li><strong>Dịch hình ảnh:</strong> Tải ảnh JPG, JPEG, PNG, WEBP (tối đa 10 MB) để nhận diện chữ OCR và dịch sang hơn 100 ngôn ngữ.</li></ul>"
-      },
-      troubleshooting: {
-        title: "2. Xử lý sự cố & Các lỗi thường gặp",
-        html: "<ul><li><strong>Tệp vượt quá dung lượng hoặc có mật khẩu:</strong> Chia nhỏ tài liệu dưới 50 MB (hình ảnh dưới 10 MB) và gỡ mật khẩu trước khi tải lên.</li><li><strong>Trang web không thể dịch:</strong> Kiểm tra URL có đúng chuẩn <code>https://</code> hay không; các trang nội bộ (localhost/IP riêng) hoặc trang chặn bot (403) sẽ được hệ thống thông báo rõ.</li><li><strong>Hình ảnh không nhận diện được chữ:</strong> Đảm bảo ảnh chụp thẳng, đủ sáng, chữ không bị mờ hoặc bị che khuất.</li></ul>"
-      },
-      security: {
-        title: "3. Tài khoản, Quyền riêng tư & Bảo mật Dữ liệu",
-        html: "<ul><li><strong>Không cần tạo tài khoản bắt buộc:</strong> Bạn có thể sử dụng ngay toàn bộ tính năng dịch thuật mà không phải khai báo thông tin cá nhân.</li><li><strong>Zero User Data Storage:</strong> Không lưu văn bản dịch, không lưu tài liệu gốc, không lưu hình ảnh hay lịch sử dịch thuật.</li><li><strong>Chống SSRF &amp; Chặn Macro:</strong> Tự động từ chối tệp Office chứa Macro (<code>vbaProject.bin</code>) và ngăn chặn mọi truy vấn URL vào địa chỉ nội bộ.</li></ul>"
-      },
-      faq: {
-        title: "4. Câu hỏi thường gặp (FAQ) & Hỗ trợ trực tiếp",
-        html: "<p>Xem danh sách câu hỏi thường gặp ngay bên dưới hoặc nhấn nút <strong>Gửi yêu cầu hỗ trợ</strong> để gửi thông tin trực tiếp về email chính thức <strong>wordbridge.education@gmail.com</strong>.</p>"
-      }
-    };
-
-    function showHelpTopicDetail(topicKey) {
-      const info = HELP_TOPICS_CONTENT[topicKey] || HELP_TOPICS_CONTENT.guides;
-      document.getElementById("wbHelpTopicTitle").textContent = info.title;
-      document.getElementById("wbHelpTopicBody").innerHTML = info.html;
-    }
-
-    function filterHelpContent() {
-      const q = (document.getElementById("wbHelpSearchInput").value || "").toLowerCase().trim();
-      document.querySelectorAll("#wbFaqList .faq-entry").forEach((item) => {
-        const text = item.textContent.toLowerCase();
-        const matched = !q || text.includes(q);
-        item.style.display = matched ? "block" : "none";
-        if (q && matched) item.classList.add("open");
+        const blob = new Blob([bytes], { type: lastDocDownload.outputMimeType || "application/octet-stream" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = lastDocDownload.outputFilename || "translated_document";
+        a.click();
+        setTimeout(function() { URL.revokeObjectURL(url); }, 2000);
       });
-    }
 
-    function updateFeedbackCharCounter() {
-      const val = document.getElementById("wbFeedbackMessage").value || "";
-      document.getElementById("wbFeedbackCharCount").textContent =
-        val.length.toLocaleString("vi-VN") + " / 2.000";
-    }
-
-    function onFeedbackFilePicked(file) {
-      if (!file) return;
-      appState.selectedFeedbackFile = file;
-      document.getElementById("wbFeedbackFileLabel").textContent =
-        "Đã đính kèm: " + file.name + " (" + (file.size / 1024).toFixed(1) + " KB)";
-    }
-
-    function resetFeedbackForm() {
-      document.getElementById("wbFeedbackForm").reset();
-      appState.selectedFeedbackFile = null;
-      document.getElementById("wbFeedbackCharCount").textContent = "0 / 2.000";
-      document.getElementById("wbFeedbackFileLabel").innerHTML =
-        "Hỗ trợ: JPG, JPEG, PNG, PDF &nbsp;|&nbsp; Dung lượng tối đa: 10 MB";
-      hideToast();
-    }
-
-    async function submitFeedbackForm() {
-      const feedbackType = document.getElementById("wbFeedbackType").value;
-      const title = document.getElementById("wbFeedbackTitle").value.trim();
-      const message = document.getElementById("wbFeedbackMessage").value.trim();
-      const contactEmail = document.getElementById("wbFeedbackContact").value.trim();
-
-      if (!feedbackType || !title || !message) {
-        showToast("error", "Vui lòng điền đầy đủ Loại phản hồi, Tiêu đề và Nội dung chi tiết.");
-        return;
-      }
-
-      hideToast();
-      showToast("info", "Đang gửi ý kiến phản hồi tới wordbridge.education@gmail.com...");
-
-      try {
-        let attachmentBase64 = "";
-        let attachmentFilename = "";
-        if (appState.selectedFeedbackFile) {
-          attachmentBase64 = arrayBufferToBase64(await appState.selectedFeedbackFile.arrayBuffer());
-          attachmentFilename = appState.selectedFeedbackFile.name;
+      // 3. Dịch trang web
+      byId("btn-run-web").addEventListener("click", async function() {
+        const targetUrl = byId("web-url-input").value.trim();
+        if (!targetUrl) { setStatus("web-status", "error", "Vui lòng nhập địa chỉ URL trang web."); return; }
+        const btn = byId("btn-run-web");
+        btn.disabled = true;
+        setStatus("web-status", "info", "Đang kiểm tra bảo mật, tải và dịch trang web...");
+        try {
+          const res = await fetch("/api/v1/translate/website", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              url: targetUrl,
+              sourceLang: byId("web-src-lang").value,
+              targetLang: byId("web-tgt-lang").value,
+              domain: byId("web-domain").value
+            })
+          });
+          const data = await res.json();
+          if (!res.ok || !data.ok) {
+            setStatus("web-status", "error", data.message || "Không thể dịch trang web này.");
+            byId("web-result-frame").style.display = "none";
+          } else {
+            const frame = byId("web-result-frame");
+            frame.srcdoc = data.translatedHtml;
+            frame.style.display = "block";
+            setStatus("web-status", "success", "Đã dịch và làm sạch nội dung trang web an toàn (" + (data.translatedNodes || 0) + " khối văn bản).");
+          }
+        } catch (_) {
+          setStatus("web-status", "error", "Lỗi kết nối khi dịch trang web.");
+        } finally {
+          btn.disabled = false;
         }
+      });
 
-        const res = await fetch("/api/feedback", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          cache: "no-store",
-          body: JSON.stringify({
-            feedbackType,
-            title,
-            message,
-            contactEmail,
-            attachmentBase64,
-            attachmentFilename
-          })
+      // 4. Dịch hình ảnh
+      wireDropzone("img-dropzone", "img-file-input", function(file) {
+        selectedImgFile = file;
+        byId("img-file-label").textContent = "Đã chọn ảnh: " + file.name + " (" + (file.size / 1024).toFixed(1) + " KB)";
+        const prev = byId("img-preview");
+        prev.src = URL.createObjectURL(file);
+        prev.style.display = "block";
+        setStatus("img-status", "", "");
+      });
+
+      byId("btn-run-img").addEventListener("click", async function() {
+        if (!selectedImgFile) { setStatus("img-status", "error", "Vui lòng chọn hình ảnh trước."); return; }
+        const btn = byId("btn-run-img");
+        btn.disabled = true;
+        setStatus("img-status", "info", "Đang nhận diện văn bản trong hình ảnh và dịch...");
+        try {
+          const b64 = await fileToBase64(selectedImgFile);
+          const res = await fetch("/api/v1/translate/image", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              filename: selectedImgFile.name,
+              imageBase64: b64,
+              sourceLang: byId("img-src-lang").value,
+              targetLang: byId("img-tgt-lang").value,
+              domain: byId("img-domain").value
+            })
+          });
+          const data = await res.json();
+          if (!res.ok || !data.ok) {
+            setStatus("img-status", "error", data.message || "Không thể dịch hình ảnh.");
+          } else {
+            lastImgResultText = data.translatedText || "";
+            byId("img-extracted-text").textContent = data.extractedText || "";
+            byId("img-translated-text").textContent = lastImgResultText;
+            byId("img-results-grid").style.display = "grid";
+            byId("btn-copy-img").style.display = "inline-flex";
+            byId("btn-download-img").style.display = "inline-flex";
+            setStatus("img-status", "success", "Đã nhận diện văn bản và dịch hình ảnh thành công.");
+          }
+        } catch (_) {
+          setStatus("img-status", "error", "Lỗi kết nối khi dịch hình ảnh.");
+        } finally {
+          btn.disabled = false;
+        }
+      });
+
+      byId("btn-copy-img").addEventListener("click", async function() {
+        if (!lastImgResultText) return;
+        try {
+          await navigator.clipboard.writeText(lastImgResultText);
+          setStatus("img-status", "success", "Đã sao chép bản dịch hình ảnh.");
+        } catch (_) {}
+      });
+
+      byId("btn-download-img").addEventListener("click", function() {
+        if (!lastImgResultText) return;
+        const blob = new Blob([lastImgResultText], { type: "text/plain;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "wordbridge_image_translation.txt";
+        a.click();
+        setTimeout(function() { URL.revokeObjectURL(url); }, 2000);
+      });
+
+      // 7. Trợ giúp — Tìm kiếm & FAQ đóng/mở
+      document.querySelectorAll(".wb-faq-btn").forEach(function(btn) {
+        btn.addEventListener("click", function() {
+          const item = btn.closest(".wb-faq-item");
+          const open = item.classList.toggle("is-open");
+          btn.setAttribute("aria-expanded", open ? "true" : "false");
         });
-        const data = await res.json();
-        if (!res.ok || !data.ok) {
-          showToast("error", data.message || "Không thể gửi phản hồi lúc này.");
-          return;
-        }
-        resetFeedbackForm();
-        showToast(
-          "success",
-          "Đã gửi phản hồi thành công tới " + data.recipient + " với tiêu đề: " + data.subject
-        );
-      } catch (_) {
-        showToast("error", "Lỗi kết nối khi gửi biểu mẫu phản hồi.");
+      });
+      const helpSearch = byId("help-search");
+      if (helpSearch) {
+        helpSearch.addEventListener("input", function() {
+          const q = helpSearch.value.trim().toLowerCase();
+          document.querySelectorAll(".wb-help-block").forEach(function(block) {
+            const hay = (block.textContent + " " + (block.getAttribute("data-search") || "")).toLowerCase();
+            block.style.display = !q || hay.includes(q) ? "block" : "none";
+          });
+        });
       }
-    }
 
-    populateAllSelects();
-    switchView(INITIAL_VIEW, true);
+      // 8. Gửi ý kiến phản hồi
+      const fbMsg = byId("fb-message");
+      if (fbMsg) {
+        fbMsg.addEventListener("input", function() {
+          byId("fb-char-count").textContent = fbMsg.value.length.toLocaleString("vi-VN") + " / 2.000 ký tự";
+        });
+      }
+      byId("btn-reset-fb").addEventListener("click", function() {
+        byId("feedback-form").reset();
+        byId("fb-char-count").textContent = "0 / 2.000 ký tự";
+        setStatus("fb-status", "", "");
+      });
+      byId("feedback-form").addEventListener("submit", async function(e) {
+        e.preventDefault();
+        const btn = byId("btn-submit-fb");
+        btn.disabled = true;
+        setStatus("fb-status", "info", "Đang gửi phản hồi qua máy chủ email độc lập...");
+        try {
+          let attB64 = "";
+          let attName = "";
+          const fileInput = byId("fb-file");
+          if (fileInput.files && fileInput.files[0]) {
+            attName = fileInput.files[0].name;
+            attB64 = await fileToBase64(fileInput.files[0]);
+          }
+          const res = await fetch("/api/v1/feedback", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              feedbackType: byId("fb-type").value,
+              title: byId("fb-title").value,
+              message: byId("fb-message").value,
+              contactEmail: byId("fb-email").value,
+              websiteTrap: byId("fb-trap").value,
+              attachmentFilename: attName,
+              attachmentBase64: attB64
+            })
+          });
+          const data = await res.json();
+          if (!res.ok || !data.ok) {
+            setStatus("fb-status", "error", data.message || "Không thể gửi phản hồi lúc này.");
+          } else {
+            setStatus("fb-status", "success", data.message || "Đã gửi phản hồi thành công.");
+            byId("feedback-form").reset();
+            byId("fb-char-count").textContent = "0 / 2.000 ký tự";
+          }
+        } catch (_) {
+          setStatus("fb-status", "error", "Lỗi kết nối tới máy chủ phản hồi.");
+        } finally {
+          btn.disabled = false;
+        }
+      });
+
+      populateSelects();
+      wireSwap("btn-swap-text", "text-src-lang", "text-tgt-lang");
+      wireSwap("btn-swap-doc", "doc-src-lang", "doc-tgt-lang");
+      wireSwap("btn-swap-web", "web-src-lang", "web-tgt-lang");
+      wireSwap("btn-swap-img", "img-src-lang", "img-tgt-lang");
+    })();
   </script>
 </body>
 </html>`;

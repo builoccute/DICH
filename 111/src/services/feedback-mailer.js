@@ -1,461 +1,397 @@
 /**
  * @file src/services/feedback-mailer.js
- * @description Hệ thống Tiếp nhận Ý kiến Phản hồi & Tự động Gửi Email Hỗ trợ.
- * ĐỊA CHỈ EMAIL TIẾP NHẬN CHÍNH THỨC VÀ DUY NHẤT:
+ * @description Hệ thống Tiếp nhận Ý kiến Phản hồi & Tự động Gửi Email qua SMTP Độc lập (Zero Cloudflare Email Routing).
+ *
+ * ĐỊA CHỈ TIẾP NHẬN CHÍNH THỨC VÀ DUY NHẤT:
  *   wordbridge.education@gmail.com
  *
- * Yêu cầu bắt buộc (Phần VII):
+ * QUY CHUẨN BẮT BUỘC:
  *   - Tiêu đề email chuẩn: [WORD BRIDGE TRANS] – [LOẠI PHẢN HỒI] – [TIÊU ĐỀ]
- *   - Hỗ trợ 08 loại phản hồi chính thức.
- *   - Hỗ trợ tệp đính kèm tùy chọn (JPG, JPEG, PNG, PDF | tối đa 10 MB) kiểm tra bằng Magic Bytes.
- *   - Tuyệt đối không dùng `mailto:`, không giả lập thành công, không lưu vào D1/R2.
- *   - Hỗ trợ gửi qua Cloudflare Email Routing (`env.SEND_EMAIL`), Resend/SendGrid/MailChannels/SMTP Relay API.
+ *   - KHÔNG sử dụng Cloudflare Email Routing (đã loại bỏ hoàn toàn).
+ *   - KHÔNG dùng `mailto:` làm cơ chế chính.
+ *   - KHÔNG lưu nội dung phản hồi vào database dịch thuật.
+ *   - KHÔNG báo thành công khi máy chủ SMTP chưa xác nhận `250 OK`.
  */
 
-import { verifyFileSignature, wipeBuffer, escapeHtml, sanitizedLog } from "../security/privacy-shield.js";
+import * as net from "node:net";
+import * as tls from "node:tls";
+import * as crypto from "node:crypto";
+import { EphemeralRateLimiter, escapeHtml, verifyFileSignature, wipeBuffer } from "../security/privacy-shield.js";
 
 export const OFFICIAL_SUPPORT_EMAIL = "wordbridge.education@gmail.com";
-export const VERIFIED_SENDER_ADDRESS = "noreply@wordbridge.io.vn";
 export const MAX_FEEDBACK_MESSAGE_LENGTH = 2000;
 export const MAX_FEEDBACK_TITLE_LENGTH = 200;
 export const MAX_FEEDBACK_ATTACHMENT_BYTES = 10 * 1024 * 1024; // 10 MB
 
 export const FEEDBACK_TYPES = Object.freeze([
-  { id: "technical_bug", label: "Báo lỗi kỹ thuật" },
-  { id: "ui_feedback", label: "Góp ý giao diện" },
-  { id: "translation_quality", label: "Góp ý chất lượng dịch thuật" },
-  { id: "language_request", label: "Đề xuất ngôn ngữ" },
-  { id: "feature_request", label: "Đề xuất tính năng" },
-  { id: "support_request", label: "Yêu cầu hỗ trợ" },
-  { id: "security_issue", label: "Báo cáo vấn đề bảo mật" },
+  { id: "bug", label: "Báo lỗi kỹ thuật" },
+  { id: "ui", label: "Góp ý giao diện" },
+  { id: "quality", label: "Góp ý chất lượng bản dịch" },
+  { id: "language", label: "Đề xuất ngôn ngữ" },
+  { id: "feature", label: "Đề xuất tính năng" },
+  { id: "support", label: "Yêu cầu hỗ trợ" },
+  { id: "security", label: "Báo cáo bảo mật" },
   { id: "other", label: "Nội dung khác" }
 ]);
 
-// Bộ chống gửi liên tục (Anti-Spam Cooldown) trên RAM không lưu IP
-class FeedbackCooldownLimiter {
-  constructor() {
-    this.recentBuckets = new Map();
-  }
-
-  checkAndRecord(signalKey) {
-    const now = Date.now();
-    for (const [k, entry] of this.recentBuckets.entries()) {
-      if (now - entry.firstTs > 15000) this.recentBuckets.delete(k);
-    }
-    const existing = this.recentBuckets.get(signalKey);
-    const count = existing ? existing.count + 1 : 1;
-    const firstTs = existing ? existing.firstTs : now;
-    if (count > 5) {
-      return {
-        allowed: false,
-        message: "Bạn đang gửi phản hồi quá nhanh. Vui lòng đợi 15 giây trước khi gửi yêu cầu tiếp theo."
-      };
-    }
-    this.recentBuckets.set(signalKey, { count, firstTs });
-    return { allowed: true };
-  }
-
-  reset() {
-    this.recentBuckets.clear();
-  }
-}
-
-export const feedbackCooldownLimiter = new FeedbackCooldownLimiter();
+export const feedbackCooldownLimiter = new EphemeralRateLimiter(5, 10 * 60 * 1000);
 
 export function resolveFeedbackTypeLabel(typeInput) {
-  const raw = String(typeInput || "").trim();
-  const found = FEEDBACK_TYPES.find(
-    (t) => t.id.toLowerCase() === raw.toLowerCase() || t.label.toLowerCase() === raw.toLowerCase()
-  );
+  const norm = String(typeInput || "").trim().toLowerCase();
+  const found = FEEDBACK_TYPES.find((t) => t.id === norm || t.label.toLowerCase() === norm);
   return found ? found.label : null;
 }
 
-/**
- * Kiểm tra tệp đính kèm trong biểu mẫu phản hồi (Hỗ trợ JPG, JPEG, PNG, PDF | Tối đa 10 MB).
- */
 export function validateFeedbackAttachment(uint8Array, filename = "") {
-  if (!uint8Array || uint8Array.byteLength === 0) {
-    return { valid: true, hasAttachment: false };
+  if (!uint8Array || uint8Array.length === 0) return { valid: true, skipped: true };
+  if (uint8Array.length > MAX_FEEDBACK_ATTACHMENT_BYTES) {
+    return { valid: false, code: "ERR_ATTACHMENT_TOO_LARGE", message: "Tệp đính kèm vượt quá 10 MB." };
   }
-  if (uint8Array.byteLength > MAX_FEEDBACK_ATTACHMENT_BYTES) {
-    return {
-      valid: false,
-      code: "ERR_FEEDBACK_ATTACHMENT_TOO_LARGE",
-      message: "Tệp đính kèm vượt quá dung lượng tối đa 10 MB."
-    };
+  const lower = String(filename || "").toLowerCase();
+  if (lower.endsWith(".pdf")) {
+    return verifyFileSignature(uint8Array, filename, "document");
   }
-
-  const b0 = uint8Array[0];
-  const b1 = uint8Array[1];
-  const b2 = uint8Array[2];
-  const b3 = uint8Array[3];
-
-  const isPng = b0 === 0x89 && b1 === 0x50 && b2 === 0x4e && b3 === 0x47;
-  const isJpeg = b0 === 0xff && b1 === 0xd8 && b2 === 0xff;
-  const isPdf =
-    uint8Array.byteLength >= 5 &&
-    b0 === 0x25 &&
-    b1 === 0x50 &&
-    b2 === 0x44 &&
-    b3 === 0x46 &&
-    uint8Array[4] === 0x2d;
-
-  if (!isPng && !isJpeg && !isPdf) {
-    return {
-      valid: false,
-      code: "ERR_FEEDBACK_INVALID_ATTACHMENT_TYPE",
-      message: "Tệp đính kèm không hợp lệ. Chỉ hỗ trợ định dạng JPG, JPEG, PNG hoặc PDF (tối đa 10 MB)."
-    };
-  }
-
-  const mimeType = isPng ? "image/png" : isJpeg ? "image/jpeg" : "application/pdf";
-  const ext = isPng ? "png" : isJpeg ? "jpg" : "pdf";
-  const safeFilename =
-    String(filename || `attachment.${ext}`).replace(/[^a-zA-Z0-9._-]/g, "_") || `attachment.${ext}`;
-
-  return {
-    valid: true,
-    hasAttachment: true,
-    mimeType,
-    filename: safeFilename,
-    byteLength: uint8Array.byteLength
-  };
+  return verifyFileSignature(uint8Array, filename, "image");
 }
 
-/**
- * Đóng gói bức thư chuẩn RFC 5322 MIME để gửi qua Cloudflare Email Routing (`env.SEND_EMAIL`).
- */
+function encodeMimeHeaderUtf8(str) {
+  const clean = String(str || "").replace(/[\r\n]+/g, " ").trim();
+  if (/^[\x20-\x7E]*$/.test(clean)) return clean;
+  return `=?UTF-8?B?${Buffer.from(clean, "utf-8").toString("base64")}?=`;
+}
+
 export function buildRfc5322MimeEmail({
-  subject,
   fromAddress,
-  toAddress,
-  replyTo,
+  toAddress = OFFICIAL_SUPPORT_EMAIL,
+  replyTo = "",
+  subject,
   textBody,
   htmlBody,
-  attachment
+  attachment = null
 }) {
-  const boundary = `wb_mime_${Date.now().toString(36)}`;
-  const encodedSubject = `=?UTF-8?B?${Buffer.from(subject, "utf-8").toString("base64")}?=`;
+  const boundaryMix = `----=_WBTrans_Mix_${crypto.randomBytes(8).toString("hex")}`;
+  const boundaryAlt = `----=_WBTrans_Alt_${crypto.randomBytes(8).toString("hex")}`;
+  const dateHeader = new Date().toUTCString();
+  const msgId = `<wbtrans-${crypto.randomBytes(10).toString("hex")}@wordbridge.io.vn>`;
+
   const headers = [
-    `From: "Word Bridge Translation Support" <${fromAddress}>`,
+    `From: Word Bridge Translation <${fromAddress}>`,
     `To: <${toAddress}>`,
-    `Subject: ${encodedSubject}`,
-    `Date: ${new Date().toUTCString()}`,
-    `MIME-Version: 1.0`
+    ...(replyTo ? [`Reply-To: <${replyTo}>`] : []),
+    `Subject: ${encodeMimeHeaderUtf8(subject)}`,
+    `Date: ${dateHeader}`,
+    `Message-ID: ${msgId}`,
+    `MIME-Version: 1.0`,
+    `Content-Type: multipart/mixed; boundary="${boundaryMix}"`
   ];
-  if (replyTo) {
-    headers.push(`Reply-To: <${replyTo}>`);
-  }
 
-  if (!attachment || !attachment.hasAttachment) {
-    headers.push(`Content-Type: text/html; charset="UTF-8"`);
-    headers.push(`Content-Transfer-Encoding: base64`);
-    const b64Html = Buffer.from(htmlBody, "utf-8").toString("base64");
-    return `${headers.join("\r\n")}\r\n\r\n${b64Html}\r\n`;
-  }
-
-  headers.push(`Content-Type: multipart/mixed; boundary="${boundary}"`);
   const parts = [
-    `--${boundary}`,
+    `--${boundaryMix}`,
+    `Content-Type: multipart/alternative; boundary="${boundaryAlt}"`,
+    ``,
+    `--${boundaryAlt}`,
+    `Content-Type: text/plain; charset="UTF-8"`,
+    `Content-Transfer-Encoding: base64`,
+    ``,
+    Buffer.from(textBody, "utf-8").toString("base64").replace(/.{1,76}/g, "$&\r\n").trim(),
+    `--${boundaryAlt}`,
     `Content-Type: text/html; charset="UTF-8"`,
     `Content-Transfer-Encoding: base64`,
     ``,
-    Buffer.from(htmlBody, "utf-8").toString("base64"),
-    `--${boundary}`,
-    `Content-Type: ${attachment.mimeType}; name="${attachment.filename}"`,
-    `Content-Disposition: attachment; filename="${attachment.filename}"`,
-    `Content-Transfer-Encoding: base64`,
-    ``,
-    attachment.base64Data,
-    `--${boundary}--`
+    Buffer.from(htmlBody, "utf-8").toString("base64").replace(/.{1,76}/g, "$&\r\n").trim(),
+    `--${boundaryAlt}--`
   ];
 
-  return `${headers.join("\r\n")}\r\n\r\n${parts.join("\r\n")}\r\n`;
+  if (attachment && attachment.bytes && attachment.bytes.length > 0) {
+    const safeName = String(attachment.filename || "attachment.bin").replace(/[^a-zA-Z0-9._-]/g, "_");
+    const b64 = Buffer.from(attachment.bytes).toString("base64").replace(/.{1,76}/g, "$&\r\n").trim();
+    parts.push(
+      `--${boundaryMix}`,
+      `Content-Type: ${attachment.mimeType || "application/octet-stream"}; name="${safeName}"`,
+      `Content-Disposition: attachment; filename="${safeName}"`,
+      `Content-Transfer-Encoding: base64`,
+      ``,
+      b64
+    );
+  }
+
+  parts.push(`--${boundaryMix}--`, ``);
+  return `${headers.join("\r\n")}\r\n\r\n${parts.join("\r\n")}`;
 }
 
 /**
- * Xử lý biểu mẫu phản hồi và gửi email thực tế tới duy nhất `wordbridge.education@gmail.com`.
+ * Khách hàng SMTP chuẩn RFC 5321 độc lập (hỗ trợ SMTPS 465, STARTTLS 587 và SMTP cục bộ).
  */
-export async function submitFeedbackAndSendEmail(payload = {}, env = {}, clientSignal = "default") {
-  let attachmentBytes = null;
-  try {
-    // 1. Kiểm tra chống spam liên tục
-    const rateCheck = feedbackCooldownLimiter.checkAndRecord(clientSignal);
-    if (!rateCheck.allowed) {
-      return {
-        ok: false,
-        code: "ERR_FEEDBACK_RATE_LIMITED",
-        message: rateCheck.message
-      };
-    }
+export function sendViaStandaloneSmtp({ host, port, secure, user, pass, mailFrom, rcptTo, rawMime, timeoutMs = 15000 }) {
+  return new Promise((resolve, reject) => {
+    let socket = null;
+    let buffer = "";
+    let step = 0;
+    let settled = false;
 
-    // 2. Kiểm tra Loại phản hồi
-    const typeLabel = resolveFeedbackTypeLabel(payload.feedbackType || payload.type);
-    if (!typeLabel) {
-      return {
-        ok: false,
-        code: "ERR_INVALID_FEEDBACK_TYPE",
-        message: "Vui lòng chọn loại phản hồi hợp lệ từ danh sách."
-      };
-    }
-
-    // 3. Kiểm tra Tiêu đề
-    const title = String(payload.title || "").trim();
-    if (!title) {
-      return {
-        ok: false,
-        code: "ERR_EMPTY_FEEDBACK_TITLE",
-        message: "Vui lòng nhập tiêu đề ngắn gọn cho ý kiến phản hồi."
-      };
-    }
-    if (title.length > MAX_FEEDBACK_TITLE_LENGTH) {
-      return {
-        ok: false,
-        code: "ERR_FEEDBACK_TITLE_TOO_LONG",
-        message: `Tiêu đề phản hồi không được vượt quá ${MAX_FEEDBACK_TITLE_LENGTH} ký tự.`
-      };
-    }
-
-    // 4. Kiểm tra Nội dung chi tiết
-    const message = String(payload.message || payload.content || "").trim();
-    if (!message) {
-      return {
-        ok: false,
-        code: "ERR_EMPTY_FEEDBACK_MESSAGE",
-        message: "Vui lòng nhập nội dung chi tiết ý kiến hoặc vấn đề bạn gặp phải."
-      };
-    }
-    if (message.length > MAX_FEEDBACK_MESSAGE_LENGTH) {
-      return {
-        ok: false,
-        code: "ERR_FEEDBACK_MESSAGE_TOO_LONG",
-        message: `Nội dung chi tiết không được vượt quá ${MAX_FEEDBACK_MESSAGE_LENGTH.toLocaleString("vi-VN")} ký tự.`
-      };
-    }
-
-    // 5. Kiểm tra Email liên hệ tùy chọn (đưa vào Reply-To nếu hợp lệ)
-    const contactEmail = String(payload.contactEmail || "").trim();
-    let validatedReplyTo = "";
-    if (contactEmail) {
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      if (!emailRegex.test(contactEmail)) {
-        return {
-          ok: false,
-          code: "ERR_INVALID_CONTACT_EMAIL",
-          message: "Địa chỉ email liên hệ (tùy chọn) không đúng định dạng."
-        };
-      }
-      validatedReplyTo = contactEmail;
-    }
-
-    // 6. Kiểm tra tệp đính kèm tùy chọn (JPG, JPEG, PNG, PDF <= 10 MB)
-    let attachmentInfo = { valid: true, hasAttachment: false };
-    if (payload.attachmentBase64) {
-      const cleanedB64 = String(payload.attachmentBase64).replace(/^data:[^;]+;base64,/, "").trim();
-      attachmentBytes = new Uint8Array(Buffer.from(cleanedB64, "base64"));
-      const check = validateFeedbackAttachment(attachmentBytes, payload.attachmentFilename || "attachment");
-      if (!check.valid) {
-        return {
-          ok: false,
-          code: check.code,
-          message: check.message
-        };
-      }
-      attachmentInfo = {
-        ...check,
-        base64Data: cleanedB64
-      };
-    }
-
-    // 7. Thiết lập tiêu đề chuẩn bắt buộc: [WORD BRIDGE TRANS] – [LOẠI PHẢN HỒI] – [TIÊU ĐỀ]
-    const emailSubject = `[WORD BRIDGE TRANS] – [${typeLabel.toUpperCase()}] – [${title}]`;
-    const receivedAt = new Date().toISOString();
-    const relatedFeature = String(payload.relatedFeature || "Word Bridge Translation Web").trim();
-
-    const textBody = [
-      "HỆ THỐNG TIẾP NHẬN PHẢN HỒI – WORD BRIDGE TRANSLATION (DICHTHUAT.WORDBRIDGE.IO.VN)",
-      "================================================================================",
-      `Email nhận chính thức: ${OFFICIAL_SUPPORT_EMAIL}`,
-      `Loại phản hồi: ${typeLabel}`,
-      `Tiêu đề: ${title}`,
-      `Chức năng liên quan: ${relatedFeature}`,
-      `Thời điểm tiếp nhận: ${receivedAt}`,
-      `Thông tin liên hệ (Reply-To): ${validatedReplyTo || "Không cung cấp (Ẩn danh)"}`,
-      `Tệp đính kèm: ${attachmentInfo.hasAttachment ? `${attachmentInfo.filename} (${attachmentInfo.byteLength} bytes)` : "Không có"}`,
-      "--------------------------------------------------------------------------------",
-      "NỘI DUNG CHI TIẾT:",
-      message,
-      "================================================================================"
-    ].join("\n");
-
-    const htmlBody = `<div style="font-family:Inter,Arial,sans-serif;max-width:680px;margin:0 auto;border:1px solid #d9e3ea;border-radius:12px;overflow:hidden;">
-      <div style="background:#084c59;color:#ffffff;padding:16px 20px;border-bottom:4px solid #d1101a;">
-        <h2 style="margin:0;font-size:18px;">WORD BRIDGE TRANSLATION (TRANS) – PHẢN HỒI NGƯỜI DÙNG</h2>
-        <div style="font-size:12px;opacity:0.9;margin-top:4px;">Website: https://dichthuat.wordbridge.io.vn · Tiếp nhận tại: ${OFFICIAL_SUPPORT_EMAIL}</div>
-      </div>
-      <div style="padding:20px;background:#ffffff;color:#11242b;font-size:14px;line-height:1.6;">
-        <table style="width:100%;border-collapse:collapse;margin-bottom:16px;">
-          <tr><td style="padding:6px 0;font-weight:700;width:180px;">Loại phản hồi:</td><td>${escapeHtml(typeLabel)}</td></tr>
-          <tr><td style="padding:6px 0;font-weight:700;">Tiêu đề:</td><td>${escapeHtml(title)}</td></tr>
-          <tr><td style="padding:6px 0;font-weight:700;">Chức năng liên quan:</td><td>${escapeHtml(relatedFeature)}</td></tr>
-          <tr><td style="padding:6px 0;font-weight:700;">Thời điểm tiếp nhận:</td><td>${escapeHtml(receivedAt)}</td></tr>
-          <tr><td style="padding:6px 0;font-weight:700;">Email người gửi:</td><td>${escapeHtml(validatedReplyTo || "Không cung cấp")}</td></tr>
-          <tr><td style="padding:6px 0;font-weight:700;">Tệp đính kèm:</td><td>${attachmentInfo.hasAttachment ? escapeHtml(`${attachmentInfo.filename} (${attachmentInfo.byteLength} bytes)`) : "Không có"}</td></tr>
-        </table>
-        <div style="background:#f4f8fa;border-left:4px solid #084c59;padding:14px 16px;border-radius:6px;white-space:pre-wrap;">${escapeHtml(message)}</div>
-      </div>
-    </div>`;
-
-    const rawMime = buildRfc5322MimeEmail({
-      subject: emailSubject,
-      fromAddress: VERIFIED_SENDER_ADDRESS,
-      toAddress: OFFICIAL_SUPPORT_EMAIL,
-      replyTo: validatedReplyTo,
-      textBody,
-      htmlBody,
-      attachment: attachmentInfo
-    });
-
-    // 8. Thực hiện gửi Email qua các kênh đã cấu hình
-    // Kênh A: Custom Test/Runtime Transport Handler hoặc Cloudflare Email Routing Binding (env.SEND_EMAIL)
-    if (env && env.SEND_EMAIL && typeof env.SEND_EMAIL.send === "function") {
+    const finish = (err, info) => {
+      if (settled) return;
+      settled = true;
       try {
-        await env.SEND_EMAIL.send({
-          from: VERIFIED_SENDER_ADDRESS,
-          to: OFFICIAL_SUPPORT_EMAIL,
-          replyTo: validatedReplyTo || undefined,
-          subject: emailSubject,
-          raw: rawMime
-        });
-        return {
-          ok: true,
-          recipient: OFFICIAL_SUPPORT_EMAIL,
-          subject: emailSubject,
-          feedbackType: typeLabel,
-          receivedAt,
-          transport: "cloudflare_send_email_binding",
-          message: `Ý kiến phản hồi của bạn đã được gửi thành công tới ${OFFICIAL_SUPPORT_EMAIL}.`
-        };
-      } catch (err) {
-        sanitizedLog("ERROR", "EMAIL_BINDING_SEND_FAILED", { errorCode: "ERR_SEND_EMAIL_BINDING" });
-        return {
-          ok: false,
-          code: "ERR_EMAIL_DELIVERY_FAILED",
-          recipient: OFFICIAL_SUPPORT_EMAIL,
-          message: "Dịch vụ gửi email đang gặp sự cố kết nối tạm thời. Vui lòng thử lại sau ít phút."
-        };
-      }
-    }
+        if (socket && !socket.destroyed) socket.end();
+      } catch (_) {}
+      if (err) reject(err);
+      else resolve(info);
+    };
 
-    // Kênh B: Resend Transactional Email API (RESEND_API_KEY)
-    if (env && env.RESEND_API_KEY) {
-      try {
-        const resendPayload = {
-          from: `Word Bridge Translation <${VERIFIED_SENDER_ADDRESS}>`,
-          to: [OFFICIAL_SUPPORT_EMAIL],
-          subject: emailSubject,
-          html: htmlBody,
-          text: textBody
-        };
-        if (validatedReplyTo) resendPayload.reply_to = validatedReplyTo;
-        if (attachmentInfo.hasAttachment) {
-          resendPayload.attachments = [
-            {
-              filename: attachmentInfo.filename,
-              content: attachmentInfo.base64Data
+    const writeCmd = (cmd) => {
+      socket.write(`${cmd}\r\n`);
+    };
+
+    const attachListeners = (sock) => {
+      sock.setTimeout(timeoutMs, () => finish(new Error("ERR_SMTP_TIMEOUT")));
+      sock.on("error", (err) => finish(err));
+      sock.on("data", (chunk) => {
+        buffer += chunk.toString("utf-8");
+        const lines = buffer.split("\r\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (!line || line.length < 3) continue;
+          // Phản hồi nhiều dòng dạng "250-..."
+          if (line[3] === "-") continue;
+          const code = Number(line.slice(0, 3));
+
+          if (step === 0) {
+            if (code !== 220) return finish(new Error(`ERR_SMTP_GREETING_${code}`));
+            step = 1;
+            writeCmd("EHLO dichthuat.wordbridge.io.vn");
+          } else if (step === 1) {
+            if (code !== 250) return finish(new Error(`ERR_SMTP_EHLO_${code}`));
+            if (!secure && Number(port) === 587) {
+              step = 2;
+              writeCmd("STARTTLS");
+            } else if (user && pass) {
+              step = 4;
+              const authPayload = Buffer.from(`\u0000${user}\u0000${pass}`, "utf-8").toString("base64");
+              writeCmd(`AUTH PLAIN ${authPayload}`);
+            } else {
+              step = 5;
+              writeCmd(`MAIL FROM:<${mailFrom}>`);
             }
-          ];
+          } else if (step === 2) {
+            if (code !== 220) return finish(new Error(`ERR_SMTP_STARTTLS_${code}`));
+            const upgraded = tls.connect({ socket: sock, servername: host, rejectUnauthorized: true });
+            sock.removeAllListeners("data");
+            sock.removeAllListeners("error");
+            socket = upgraded;
+            step = 3;
+            attachListeners(upgraded);
+            upgraded.once("secureConnect", () => writeCmd("EHLO dichthuat.wordbridge.io.vn"));
+          } else if (step === 3) {
+            if (code !== 250) return finish(new Error(`ERR_SMTP_EHLO_TLS_${code}`));
+            if (user && pass) {
+              step = 4;
+              const authPayload = Buffer.from(`\u0000${user}\u0000${pass}`, "utf-8").toString("base64");
+              writeCmd(`AUTH PLAIN ${authPayload}`);
+            } else {
+              step = 5;
+              writeCmd(`MAIL FROM:<${mailFrom}>`);
+            }
+          } else if (step === 4) {
+            if (code !== 235) return finish(new Error(`ERR_SMTP_AUTH_${code}`));
+            step = 5;
+            writeCmd(`MAIL FROM:<${mailFrom}>`);
+          } else if (step === 5) {
+            if (code !== 250) return finish(new Error(`ERR_SMTP_MAIL_FROM_${code}`));
+            step = 6;
+            writeCmd(`RCPT TO:<${rcptTo}>`);
+          } else if (step === 6) {
+            if (code !== 250 && code !== 251) return finish(new Error(`ERR_SMTP_RCPT_TO_${code}`));
+            step = 7;
+            writeCmd("DATA");
+          } else if (step === 7) {
+            if (code !== 354) return finish(new Error(`ERR_SMTP_DATA_${code}`));
+            step = 8;
+            // Dot-stuffing chuẩn RFC 5321
+            const stuffed = rawMime.replace(/^\./gm, "..");
+            socket.write(`${stuffed}\r\n.\r\n`);
+          } else if (step === 8) {
+            if (code !== 250) return finish(new Error(`ERR_SMTP_DELIVERY_${code}`));
+            step = 9;
+            writeCmd("QUIT");
+            finish(null, { accepted: true, responseCode: code, responseLine: line });
+          }
         }
-        const res = await fetch("https://api.resend.com/emails", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${env.RESEND_API_KEY}`
-          },
-          body: JSON.stringify(resendPayload)
-        });
-        if (!res.ok) {
-          return {
-            ok: false,
-            code: "ERR_EMAIL_PROVIDER_REJECTED",
-            recipient: OFFICIAL_SUPPORT_EMAIL,
-            message: `Nhà cung cấp dịch vụ email trả về lỗi (${res.status}). Không thể hoàn tất gửi phản hồi.`
-          };
-        }
-        return {
-          ok: true,
-          recipient: OFFICIAL_SUPPORT_EMAIL,
-          subject: emailSubject,
-          feedbackType: typeLabel,
-          receivedAt,
-          transport: "resend_transactional_api",
-          message: `Ý kiến phản hồi của bạn đã được chuyển thành công tới ${OFFICIAL_SUPPORT_EMAIL}.`
-        };
-      } catch (_) {
-        return {
-          ok: false,
-          code: "ERR_EMAIL_DELIVERY_FAILED",
-          recipient: OFFICIAL_SUPPORT_EMAIL,
-          message: "Không thể kết nối tới máy chủ gửi email giao dịch. Vui lòng thử lại sau."
-        };
-      }
-    }
+      });
+    };
 
-    // Kênh C: SMTP / Webhook Relay API (SMTP_RELAY_URL)
-    if (env && env.SMTP_RELAY_URL) {
-      try {
-        const res = await fetch(env.SMTP_RELAY_URL, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...(env.SMTP_RELAY_TOKEN ? { Authorization: `Bearer ${env.SMTP_RELAY_TOKEN}` } : {})
-          },
-          body: JSON.stringify({
-            from: VERIFIED_SENDER_ADDRESS,
-            to: OFFICIAL_SUPPORT_EMAIL,
-            replyTo: validatedReplyTo,
-            subject: emailSubject,
-            text: textBody,
-            html: htmlBody,
-            rawMime
-          })
-        });
-        if (!res.ok) {
-          return {
-            ok: false,
-            code: "ERR_SMTP_RELAY_FAILED",
-            recipient: OFFICIAL_SUPPORT_EMAIL,
-            message: "Máy chủ SMTP Relay tạm thời không phản hồi."
-          };
-        }
-        return {
-          ok: true,
-          recipient: OFFICIAL_SUPPORT_EMAIL,
-          subject: emailSubject,
-          feedbackType: typeLabel,
-          receivedAt,
-          transport: "smtp_relay_webhook",
-          message: `Ý kiến phản hồi của bạn đã được gửi tới ${OFFICIAL_SUPPORT_EMAIL}.`
-        };
-      } catch (_) {
-        return {
-          ok: false,
-          code: "ERR_SMTP_RELAY_UNREACHABLE",
-          recipient: OFFICIAL_SUPPORT_EMAIL,
-          message: "Không thể kết nối tới máy chủ SMTP Relay."
-        };
-      }
+    if (secure) {
+      socket = tls.connect({ host, port: Number(port), servername: host, rejectUnauthorized: true });
+    } else {
+      socket = net.createConnection({ host, port: Number(port) });
     }
+    attachListeners(socket);
+  });
+}
 
-    // Nếu chưa có binding SEND_EMAIL hoặc RESEND_API_KEY/SMTP_RELAY_URL trong môi trường
+function resolveEnv(env, key) {
+  return String((env && env[key]) || process.env[key] || "").trim();
+}
+
+export async function submitFeedbackAndSendEmail(payload = {}, env = {}, clientSignal = "default") {
+  // 1. Chống bot spam (Honeypot)
+  if (payload.websiteTrap && String(payload.websiteTrap).trim().length > 0) {
+    return { ok: false, status: 400, code: "ERR_SPAM_DETECTED", message: "Yêu cầu không hợp lệ." };
+  }
+
+  // 2. Giới hạn tốc độ chống spam
+  const rl = feedbackCooldownLimiter.check(clientSignal);
+  if (!rl.allowed) {
     return {
       ok: false,
-      code: "ERR_EMAIL_SERVICE_NOT_CONFIGURED",
-      recipient: OFFICIAL_SUPPORT_EMAIL,
+      status: 429,
+      code: "ERR_FEEDBACK_RATE_LIMITED",
+      message: "Bạn vừa gửi nhiều phản hồi liên tiếp. Vui lòng thử lại sau ít phút."
+    };
+  }
+
+  // 3. Kiểm tra dữ liệu đầu vào
+  const typeLabel = resolveFeedbackTypeLabel(payload.feedbackType || payload.type);
+  if (!typeLabel) {
+    return { ok: false, status: 400, code: "ERR_INVALID_FEEDBACK_TYPE", message: "Loại phản hồi không hợp lệ." };
+  }
+
+  const title = String(payload.title || "").replace(/[\r\n]+/g, " ").trim();
+  if (title.length < 3 || title.length > MAX_FEEDBACK_TITLE_LENGTH) {
+    return {
+      ok: false,
+      status: 400,
+      code: "ERR_INVALID_FEEDBACK_TITLE",
+      message: `Tiêu đề phản hồi phải từ 3 đến ${MAX_FEEDBACK_TITLE_LENGTH} ký tự.`
+    };
+  }
+
+  const message = String(payload.message || payload.content || "").trim();
+  if (message.length < 10 || message.length > MAX_FEEDBACK_MESSAGE_LENGTH) {
+    return {
+      ok: false,
+      status: 400,
+      code: "ERR_INVALID_FEEDBACK_MESSAGE",
+      message: `Nội dung chi tiết phải từ 10 đến ${MAX_FEEDBACK_MESSAGE_LENGTH} ký tự.`
+    };
+  }
+
+  const contactEmail = String(payload.contactEmail || "").trim();
+  let validatedReplyTo = "";
+  if (contactEmail) {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmail) || contactEmail.length > 254) {
+      return { ok: false, status: 400, code: "ERR_INVALID_CONTACT_EMAIL", message: "Địa chỉ email liên hệ không đúng định dạng." };
+    }
+    validatedReplyTo = contactEmail;
+  }
+
+  // 4. Kiểm tra tệp đính kèm tùy chọn (trên RAM)
+  let attachmentBytes = null;
+  let attachmentObj = null;
+  try {
+    if (payload.attachmentBase64) {
+      attachmentBytes = new Uint8Array(Buffer.from(String(payload.attachmentBase64), "base64"));
+      const attCheck = validateFeedbackAttachment(attachmentBytes, payload.attachmentFilename || "attachment");
+      if (!attCheck.valid) {
+        return { ok: false, status: 400, code: attCheck.code, message: attCheck.message };
+      }
+      attachmentObj = {
+        filename: String(payload.attachmentFilename || `attachment.${attCheck.format}`),
+        mimeType: attCheck.mimeType,
+        bytes: attachmentBytes
+      };
+    }
+
+    const emailSubject = `[WORD BRIDGE TRANS] – [${typeLabel.toUpperCase()}] – [${title}]`;
+    const mailTo = OFFICIAL_SUPPORT_EMAIL; // Khóa cứng địa chỉ nhận duy nhất
+    const mailFrom = resolveEnv(env, "MAIL_FROM") || resolveEnv(env, "SMTP_USER") || "noreply@wordbridge.io.vn";
+
+    const textBody = [
+      `HỆ THỐNG DỊCH THUẬT WORD BRIDGE (TRANS)`,
+      `Website: https://dichthuat.wordbridge.io.vn`,
+      `Loại phản hồi: ${typeLabel}`,
+      `Tiêu đề: ${title}`,
+      `Email liên hệ người gửi: ${validatedReplyTo || "Không cung cấp"}`,
+      `Thời gian tiếp nhận (UTC): ${new Date().toISOString()}`,
+      `---`,
+      message
+    ].join("\n");
+
+    const htmlBody = `<!DOCTYPE html><html lang="vi"><body style="font-family:Inter,Arial,sans-serif;color:#1e293b;line-height:1.6;">
+      <div style="max-width:640px;margin:0 auto;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
+        <div style="background:#0B63E5;color:#ffffff;padding:18px 24px;">
+          <h2 style="margin:0;font-size:18px;">WORD BRIDGE TRANSLATION — PHẢN HỒI NGƯỜI DÙNG</h2>
+          <div style="font-size:12px;opacity:0.9;margin-top:4px;">https://dichthuat.wordbridge.io.vn</div>
+        </div>
+        <div style="padding:20px 24px;">
+          <table style="width:100%;border-collapse:collapse;font-size:14px;">
+            <tr><td style="padding:6px 0;font-weight:700;width:160px;">Loại phản hồi:</td><td>${escapeHtml(typeLabel)}</td></tr>
+            <tr><td style="padding:6px 0;font-weight:700;">Tiêu đề:</td><td>${escapeHtml(title)}</td></tr>
+            <tr><td style="padding:6px 0;font-weight:700;">Email liên hệ:</td><td>${escapeHtml(validatedReplyTo || "Không cung cấp")}</td></tr>
+          </table>
+          <div style="margin-top:16px;padding:14px;background:#f8fafc;border-left:4px solid #0B63E5;white-space:pre-wrap;">${escapeHtml(message)}</div>
+        </div>
+      </div>
+    </body></html>`;
+
+    const rawMime = buildRfc5322MimeEmail({
+      fromAddress: mailFrom,
+      toAddress: mailTo,
+      replyTo: validatedReplyTo,
       subject: emailSubject,
-      message: `Hệ thống đã kiểm tra hợp lệ biểu mẫu (đích nhận: ${OFFICIAL_SUPPORT_EMAIL}), nhưng dịch vụ gửi email (Cloudflare Email Routing SEND_EMAIL hoặc RESEND_API_KEY) chưa được kích hoạt trên môi trường này.`
+      textBody,
+      htmlBody,
+      attachment: attachmentObj
+    });
+
+    const smtpHost = resolveEnv(env, "SMTP_HOST");
+    const smtpPort = Number(resolveEnv(env, "SMTP_PORT") || 587);
+    const smtpUser = resolveEnv(env, "SMTP_USER");
+    const smtpPass = resolveEnv(env, "SMTP_PASSWORD");
+    const smtpSecure = resolveEnv(env, "SMTP_SECURE").toLowerCase() === "true" || smtpPort === 465;
+
+    if (!smtpHost) {
+      return {
+        ok: false,
+        status: 503,
+        code: "ERR_SMTP_NOT_CONFIGURED",
+        message:
+          "Hệ thống gửi email SMTP độc lập chưa được cấu hình trên máy chủ (SMTP_HOST). Không thể gửi phản hồi lúc này.",
+        zeroUserDataStorage: true
+      };
+    }
+
+    const smtpRes = await sendViaStandaloneSmtp({
+      host: smtpHost,
+      port: smtpPort,
+      secure: smtpSecure,
+      user: smtpUser,
+      pass: smtpPass,
+      mailFrom,
+      rcptTo: mailTo,
+      rawMime
+    });
+
+    return {
+      ok: true,
+      status: 200,
+      delivered: true,
+      recipient: mailTo,
+      subject: emailSubject,
+      smtpResponseCode: smtpRes.responseCode,
+      message: "Ý kiến phản hồi của bạn đã được chuyển thành công tới đội ngũ Word Bridge Translation.",
+      zeroUserDataStorage: true
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      status: 502,
+      code: "ERR_SMTP_DELIVERY_FAILED",
+      message: `Máy chủ email không thể chuyển thư lúc này (${err?.message || "SMTP error"}). Vui lòng thử lại sau.`,
+      zeroUserDataStorage: true
     };
   } finally {
-    if (attachmentBytes) wipeBuffer(attachmentBytes);
+    wipeBuffer(attachmentBytes);
   }
 }

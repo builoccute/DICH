@@ -2,75 +2,84 @@
 # -*- coding: utf-8 -*-
 """
 @file self-hosted-nmt/app.py
-@description Máy chủ Microservice API Dịch thuật Tự vận hành của Word Bridge (Phương án 3)
-Sử dụng mô hình Meta NLLB-200 Distilled 600M tối ưu hóa 8-bit (CTranslate2 INT8 + SentencePiece).
-Tuân thủ tuyệt đối chính sách ZERO USER DATA STORAGE:
-  - Không ghi access log hoặc payload log.
-  - Xử lý hoàn toàn trên RAM, giải phóng biến tạm ngay sau khi dịch xong.
-  - Gắn header Cache-Control: no-store trên mọi phản hồi.
+@description Microservice API Dịch thuật Tự vận hành Word Bridge Translation (FastAPI + CTranslate2 INT8).
+Mô hình: facebook/nllb-200-distilled-600M (CC-BY-NC-4.0 / CTranslate2 INT8).
+Chính sách ZERO USER DATA STORAGE:
+  - Không ghi access log hoặc nội dung dịch ra tệp hay stdout.
+  - Xử lý hoàn toàn trên RAM, thu hồi bộ nhớ ngay sau mỗi request.
+  - Health check phân biệt rõ: máy chủ hoạt động, model đã tải, model chưa tải, model lỗi, API sẵn sàng.
+  - Tuyệt đối không trả bản dịch giả khi model chưa tải (trả HTTP 503).
 """
 
 import gc
+import hmac
 import os
 import time
-from typing import List, Optional, Union
-from fastapi import FastAPI, Header, HTTPException, Response
+from collections import deque
+from typing import Dict, List, Optional, Union
+from fastapi import FastAPI, Header, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 MODEL_DIR = os.environ.get("NLLB_CT2_MODEL_DIR", "/models/nllb-200-distilled-600M-int8")
-SP_MODEL_PATH = os.environ.get("NLLB_SP_MODEL_PATH", "/models/nllb-200-distilled-600M-int8/sentencepiece.bpe.model")
+SP_MODEL_PATH = os.environ.get(
+    "NLLB_SP_MODEL_PATH",
+    os.path.join(MODEL_DIR, "sentencepiece.bpe.model"),
+)
 API_TOKEN = os.environ.get("WORDBRIDGE_NLLB_TOKEN", "").strip()
-INTR_THREADS = int(os.environ.get("CT2_INTER_THREADS", "2"))
+INTER_THREADS = int(os.environ.get("CT2_INTER_THREADS", "2"))
 INTRA_THREADS = int(os.environ.get("CT2_INTRA_THREADS", "4"))
+MAX_BATCH_SIZE = int(os.environ.get("NLLB_MAX_BATCH_SIZE", "32"))
+MAX_CHARS_PER_ITEM = int(os.environ.get("MAX_TEXT_LENGTH", "15000"))
+RATE_LIMIT_PER_MIN = int(os.environ.get("NLLB_RATE_LIMIT_PER_MIN", "120"))
 
 app = FastAPI(
     title="Word Bridge Self-Hosted NLLB-200 NMT Microservice",
-    version="1.0.0",
+    version="2.0.0",
     docs_url=None,
     redoc_url=None,
 )
 
 _translator = None
 _tokenizer = None
+_model_status = "not_loaded"  # loaded | not_loaded | error
+_model_error: Optional[str] = None
+_rate_buckets: Dict[str, deque] = {}
 
 
 def get_engine():
     """Khởi tạo lười (Lazy-load) CTranslate2 Translator và SentencePiece trên RAM."""
-    global _translator, _tokenizer
+    global _translator, _tokenizer, _model_status, _model_error
     if _translator is not None and _tokenizer is not None:
         return _translator, _tokenizer
+
+    if not os.path.isdir(MODEL_DIR) or not os.path.isfile(SP_MODEL_PATH):
+        _model_status = "not_loaded"
+        _model_error = "Trọng số mô hình NLLB-200 CTranslate2 INT8 chưa được tải hoặc mount."
+        return None, None
 
     try:
         import ctranslate2
         import sentencepiece as spm
 
-        if os.path.isdir(MODEL_DIR) and os.path.isfile(SP_MODEL_PATH):
-            _translator = ctranslate2.Translator(
-                MODEL_DIR,
-                device="cpu",
-                compute_type="int8",
-                inter_threads=INTR_THREADS,
-                intra_threads=INTRA_THREADS,
-            )
-            sp = spm.SentencePieceProcessor()
-            sp.load(SP_MODEL_PATH)
-            _tokenizer = sp
-    except Exception:
+        _translator = ctranslate2.Translator(
+            MODEL_DIR,
+            device=os.environ.get("CT2_DEVICE", "cpu"),
+            compute_type=os.environ.get("CT2_COMPUTE_TYPE", "int8"),
+            inter_threads=INTER_THREADS,
+            intra_threads=INTRA_THREADS,
+        )
+        sp = spm.SentencePieceProcessor()
+        sp.load(SP_MODEL_PATH)
+        _tokenizer = sp
+        _model_status = "loaded"
+        _model_error = None
+    except Exception as exc:
         _translator = None
         _tokenizer = None
+        _model_status = "error"
+        _model_error = f"Lỗi nạp mô hình CTranslate2/SentencePiece: {type(exc).__name__}"
 
     return _translator, _tokenizer
-
-
-class NllbTranslateRequest(BaseModel):
-    text: Union[str, List[str]] = Field(..., description="Văn bản hoặc mảng văn bản cần dịch (tối đa 15.000 ký tự)")
-    source_lang: str = Field(default="vi")
-    target_lang: str = Field(default="en")
-    src_flores: str = Field(default="vie_Latn", description="Mã ngôn ngữ nguồn chuẩn FLORES-200")
-    tgt_flores: str = Field(default="eng_Latn", description="Mã ngôn ngữ đích chuẩn FLORES-200")
-    domain: str = Field(default="general")
-    beam_size: int = Field(default=2, ge=1, le=5)
-    zero_data_retention: bool = Field(default=True)
 
 
 def apply_no_store_headers(response: Response):
@@ -80,16 +89,43 @@ def apply_no_store_headers(response: Response):
     response.headers["X-Zero-User-Data-Storage"] = "enforced"
 
 
+def enforce_rate_limit(client_key: str):
+    now = time.monotonic()
+    bucket = _rate_buckets.setdefault(client_key, deque())
+    while bucket and now - bucket[0] > 60.0:
+        bucket.popleft()
+    if len(bucket) >= RATE_LIMIT_PER_MIN:
+        raise HTTPException(status_code=429, detail="ERR_NLLB_RATE_LIMIT_EXCEEDED")
+    bucket.append(now)
+
+
+class NllbTranslateRequest(BaseModel):
+    text: Union[str, List[str]] = Field(..., description="Văn bản hoặc mảng văn bản cần dịch")
+    source_lang: str = Field(default="vi")
+    target_lang: str = Field(default="en")
+    src_flores: str = Field(default="vie_Latn")
+    tgt_flores: str = Field(default="eng_Latn")
+    domain: str = Field(default="general")
+    beam_size: int = Field(default=2, ge=1, le=5)
+    zero_data_retention: bool = Field(default=True)
+
+
 @app.get("/health")
 def health_check(response: Response):
     apply_no_store_headers(response)
-    translator, _ = get_engine()
+    translator, tokenizer = get_engine()
+    ready = translator is not None and tokenizer is not None
     return {
         "ok": True,
+        "server_alive": True,
+        "model_status": _model_status,
+        "model_weights_loaded": ready,
+        "model_error": _model_error,
+        "translation_ready": ready,
         "service": "Word Bridge Self-Hosted NLLB-200 CTranslate2 INT8 Engine",
         "model": "facebook/nllb-200-distilled-600M (CTranslate2 INT8)",
-        "supported_flores_languages": 200,
-        "model_weights_loaded": translator is not None,
+        "model_license": "CC-BY-NC-4.0 (Kiểm tra điều khoản thương mại trước khi vận hành thương mại)",
+        "hardware_requirement": "Tối thiểu 2 vCPU, 2 GB RAM (khuyến nghị 4 vCPU, 4 GB RAM)",
         "zero_user_data_storage": True,
     }
 
@@ -97,6 +133,7 @@ def health_check(response: Response):
 @app.post("/v1/nllb/translate")
 def translate_nllb(
     req: NllbTranslateRequest,
+    request: Request,
     response: Response,
     authorization: Optional[str] = Header(default=None),
 ):
@@ -105,27 +142,34 @@ def translate_nllb(
 
     if API_TOKEN:
         expected = f"Bearer {API_TOKEN}"
-        if authorization != expected:
+        if not authorization or not hmac.compare_digest(authorization, expected):
             raise HTTPException(status_code=401, detail="ERR_UNAUTHORIZED_NLLB_TOKEN")
+
+    enforce_rate_limit(str(hash(request.client.host if request.client else "local"))[:12])
 
     is_batch = isinstance(req.text, list)
     inputs = req.text if is_batch else [req.text]
 
-    if not inputs or any(len(str(x)) > 15000 for x in inputs):
+    if not inputs or len(inputs) > MAX_BATCH_SIZE:
+        raise HTTPException(status_code=400, detail="ERR_INVALID_BATCH_SIZE")
+    if any(len(str(x)) > MAX_CHARS_PER_ITEM for x in inputs):
         raise HTTPException(status_code=400, detail="ERR_INVALID_TEXT_LENGTH")
 
     translator, tokenizer = get_engine()
     if translator is None or tokenizer is None:
         raise HTTPException(
             status_code=503,
-            detail="ERR_NLLB_WEIGHTS_NOT_MOUNTED: Vui lòng mount thư mục trọng số CTranslate2 INT8 vào /models/nllb-200-distilled-600M-int8.",
+            detail={
+                "code": "ERR_NLLB_NOT_READY",
+                "model_status": _model_status,
+                "message": _model_error or "Mô hình dịch thuật chưa sẵn sàng.",
+            },
         )
 
     try:
-        # Mã hóa từng dòng sang token SentencePiece kèm thẻ ngôn ngữ nguồn FLORES-200
         source_sents = []
         for item in inputs:
-            pieces = tokenizer.encode_as_pieces(item)
+            pieces = tokenizer.encode_as_pieces(str(item))
             source_sents.append([req.src_flores] + pieces + ["</s>"])
 
         target_prefix = [[req.tgt_flores]] * len(source_sents)
@@ -133,7 +177,7 @@ def translate_nllb(
             source_sents,
             target_prefix=target_prefix,
             beam_size=req.beam_size,
-            max_batch_size=16,
+            max_batch_size=min(16, MAX_BATCH_SIZE),
         )
 
         decoded_outputs = []
@@ -156,6 +200,5 @@ def translate_nllb(
             "zero_user_data_storage": True,
         }
     finally:
-        # Giải phóng tham chiếu dữ liệu trong RAM ngay lập tức
         del inputs
         gc.collect()

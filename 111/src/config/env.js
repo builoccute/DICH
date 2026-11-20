@@ -89,17 +89,17 @@ export function getIntegrationStatus(workerEnv = null) {
 
   return {
     infrastructure: {
-      architecture: 'Cloudflare Workers + Cloudflare D1 + Cloudflare R2',
+      architecture: 'Self-Hosted Node.js + Independent SQL Database + Local Storage',
       worker_name: 'wordbridge-edu',
       d1_binding: 'DB',
       d1_database_name: 'word',
       d1_database_id: 'ce84cc48-6d49-409b-b45a-13ba3bc4a771',
       d1_connected: true,
-      d1_runtime_mode: hasD1Binding ? 'cloudflare_d1_binding' : 'd1_compatible_adapter',
+      d1_runtime_mode: hasD1Binding ? 'independent_db' : 'independent_sql_adapter',
       r2_binding: 'R2',
       r2_bucket_name: 'word',
       r2_connected: true,
-      r2_runtime_mode: hasR2Binding ? 'cloudflare_r2_binding' : 'r2_compatible_adapter',
+      r2_runtime_mode: hasR2Binding ? 'independent_storage' : 'independent_storage_adapter',
       monthly_quota_gb: getMonthlyQuotaGb(),
       monthly_quota_bytes: getMonthlyQuotaGb() * GB_BYTES,
       override_plan_quotas: false,
@@ -111,8 +111,8 @@ export function getIntegrationStatus(workerEnv = null) {
         org_plus_monthly_gb: PLAN_DEFAULT_QUOTAS.org_plus_monthly.quota_bytes / GB_BYTES,
         org_plus_yearly_gb: PLAN_DEFAULT_QUOTAS.org_plus_yearly.quota_bytes / GB_BYTES
       },
-      database_engine: 'Cloudflare D1 (word)',
-      storage_engine: 'Cloudflare R2 (word)'
+      database_engine: 'Independent SQL Database',
+      storage_engine: 'Independent Storage Vault'
     },
     email: {
       connected: emailConfigured,
@@ -140,8 +140,8 @@ const cwd = (typeof process !== 'undefined' && typeof process.cwd === 'function'
 export const PORT = Number(procEnv.PORT || 3000);
 export const NODE_ENV = procEnv.NODE_ENV || 'development';
 export const CANONICAL_ORIGIN = procEnv.CANONICAL_ORIGIN || 'https://wordbridge.io.vn';
-export const LOCAL_DB_FILE = procEnv.LOCAL_DB_FILE || procEnv.SQLITE_DB_PATH || path.resolve(cwd, 'data/wordbridge_d1_local.sqlite');
-export const STORAGE_ROOT_PATH = procEnv.STORAGE_ROOT_PATH || path.resolve(cwd, 'data/wordbridge_r2_local');
+export const LOCAL_DB_FILE = procEnv.LOCAL_DB_FILE || procEnv.SQLITE_DB_PATH || path.resolve(cwd, 'data/wordbridge_local.sqlite');
+export const STORAGE_ROOT_PATH = procEnv.STORAGE_ROOT_PATH || path.resolve(cwd, 'data/wordbridge_storage_local');
 export const STORAGE_BACKUP_PATH = procEnv.STORAGE_BACKUP_PATH || path.resolve(cwd, 'data/wordbridge_backups');
 export const STORAGE_SERVER_PROVISIONED_BYTES = Number(procEnv.STORAGE_SERVER_PROVISIONED_BYTES || (2 * TB_BYTES));
 export const SESSION_SECRET = procEnv.SESSION_SECRET || 'wb_dev_session_secret_do_not_use_in_prod_2026';

@@ -1,0 +1,51 @@
+version: "3.9"
+
+services:
+  nmt-engine:
+    build:
+      context: ./self-hosted-nmt
+      dockerfile: Dockerfile
+      args:
+        DOWNLOAD_WEIGHTS: "true"
+    container_name: wordbridge-nmt-nllb200
+    restart: unless-stopped
+    environment:
+      - WORDBRIDGE_NLLB_TOKEN=${WORDBRIDGE_NLLB_TOKEN:-}
+      - CT2_INTER_THREADS=2
+      - CT2_INTRA_THREADS=4
+    expose:
+      - "8080"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid
+
+  web-api:
+    image: node:20-bookworm-slim
+    container_name: wordbridge-translation-api
+    restart: unless-stopped
+    working_dir: /app
+    volumes:
+      - ./:/app:ro
+      - wb_metrics_data:/app/data
+    environment:
+      - PORT=8787
+      - HOST=0.0.0.0
+      - NODE_ENV=production
+      - PUBLIC_DOMAIN=${PUBLIC_DOMAIN:-https://dichthuat.wordbridge.io.vn}
+      - DATABASE_URL=${DATABASE_URL:-sqlite:///app/data/site_metrics.sqlite}
+      - WORDBRIDGE_NLLB_API_URL=http://nmt-engine:8080
+      - WORDBRIDGE_NLLB_TOKEN=${WORDBRIDGE_NLLB_TOKEN:-}
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - MAIL_FROM=${MAIL_FROM:-noreply@wordbridge.io.vn}
+      - MAIL_TO=wordbridge.education@gmail.com
+    ports:
+      - "127.0.0.1:8787:8787"
+    depends_on:
+      - nmt-engine
+    command: ["sh", "-c", "apt-get update && apt-get install -y --no-install-recommends python3 python3-pip tesseract-ocr tesseract-ocr-vie tesseract-ocr-eng fonts-dejavu-core && pip3 install --break-system-packages --no-cache-dir pypdf pdfplumber reportlab && node src/server.js"]
+
+volumes:
+  wb_metrics_data:

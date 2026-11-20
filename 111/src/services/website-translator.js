@@ -1,108 +1,96 @@
 /**
  * @file src/services/website-translator.js
- * @description Bộ xử lý Dịch Trang Web Trực tuyến (Website Translation Engine) kèm Chống SSRF.
- * Quy trình:
- *   1. Kiểm tra tính hợp lệ của URL (chỉ cho phép giao thức HTTP/HTTPS công khai).
- *   2. Chống SSRF nghiêm ngặt: Chặn localhost, 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12,
- *      192.168.0.0/16, 169.254.0.0/16 (Cloud Metadata), 0.0.0.0, IPv6 nội bộ ([::1], fc00::/7, fe80::/10),
- *      và các tên miền nội bộ (.local, .internal, .localhost).
- *   3. Truy xuất nội dung HTML trang web (hoặc xử lý HTML đầu vào), nhận diện ngôn ngữ trang.
- *   4. Dịch các thành phần văn bản hiển thị (<title>, <h1>-<h6>, <p>, <li>, <td>, <th>, <a>, <figcaption>, <button>)
- *      đồng thời giữ nguyên bố cục HTML, CSS, hình ảnh và chuẩn hóa liên kết tương đối qua thẻ <base>.
- *   5. Không lưu lịch sử URL hoặc nội dung trang web vào D1/R2.
+ * @description Bộ xử lý Dịch Trang Web Trực tuyến (Website Translation Engine) với bảo vệ SSRF & XSS toàn diện.
+ *
+ * BẢO MẬT SSRF:
+ *   - Chỉ cho phép http:// và https://, không cho phép thông tin đăng nhập trong URL.
+ *   - Chặn localhost, *.localhost, *.local, *.internal, IPv4 private/loopback/link-local/CGNAT/metadata (169.254.169.254).
+ *   - Chặn IPv6 private/loopback/link-local (::1, fc00::/7, fe80::/10, ::ffff:...).
+ *   - Phân giải DNS thực tế (`dns.lookup(..., { all: true })`) trước mỗi lần fetch và từng bước redirect (chống DNS Rebinding).
+ *   - `redirect: "manual"`, tối đa 5 bước redirect, kiểm tra lại SSRF trên từng hop.
+ *   - Đọc stream có giới hạn dung lượng (`MAX_WEB_HTML_BYTES = 2 MB`), KHÔNG gọi `response.text()` không giới hạn.
+ *   - Kiểm tra `Content-Type` (chỉ chấp nhận `text/html` hoặc `application/xhtml+xml`).
+ *
+ * BẢO MẬT XSS:
+ *   - Loại bỏ toàn bộ `<script>`, `<iframe>`, `<object>`, `<embed>`, `<applet>`, `<base>`, `<meta http-equiv="refresh">`.
+ *   - Xóa toàn bộ thuộc tính sự kiện `on*` (`onclick`, `onerror`, `onload`, ...).
+ *   - Chặn toàn bộ URL `javascript:`, `vbscript:`, `data:text/html`.
+ *   - Gắn `<meta http-equiv="Content-Security-Policy">` nghiêm ngặt trong HTML kết quả.
  */
 
+import * as dns from "node:dns/promises";
+import * as net from "node:net";
 import { translateText } from "./translation-engine.js";
-import { detectLanguage } from "./languages.js";
-import { escapeHtml } from "../security/privacy-shield.js";
+import { LIMITS } from "../security/privacy-shield.js";
 
-const PRIVATE_HOSTNAME_PATTERNS = [
+const MAX_REDIRECTS = 5;
+
+const BLOCKED_HOST_PATTERNS = [
   /^localhost$/i,
   /\.localhost$/i,
   /\.local$/i,
   /\.internal$/i,
-  /\.intranet$/i,
-  /\.corp$/i,
-  /\.home\.arpa$/i,
+  /\.localdomain$/i,
   /^metadata\.google\.internal$/i,
-  /^instance-data$/i
+  /^metadata$/i
 ];
 
-function isPrivateOrReservedIpv4(host) {
-  const ipv4Match = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (!ipv4Match) return false;
-  const octets = ipv4Match.slice(1, 5).map(Number);
-  if (octets.some((o) => Number.isNaN(o) || o < 0 || o > 255)) return true;
-
-  const [a, b] = octets;
+export function isPrivateOrReservedIpv4(ip) {
+  const parts = String(ip || "").split(".").map((n) => Number(n));
+  if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) {
+    return false;
+  }
+  const [a, b] = parts;
   if (a === 0) return true; // 0.0.0.0/8
-  if (a === 10) return true; // 10.0.0.0/8 (RFC1918)
-  if (a === 127) return true; // 127.0.0.0/8 (Loopback)
-  if (a === 169 && b === 254) return true; // 169.254.0.0/16 (Link-local / Cloud Metadata 169.254.169.254)
-  if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12 (RFC1918)
-  if (a === 192 && b === 168) return true; // 192.168.0.0/16 (RFC1918)
-  if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 (CGNAT)
+  if (a === 10) return true; // 10.0.0.0/8
+  if (a === 127) return true; // 127.0.0.0/8 loopback
+  if (a === 169 && b === 254) return true; // 169.254.0.0/16 link-local & cloud metadata
+  if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
+  if (a === 192 && b === 168) return true; // 192.168.0.0/16
+  if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 CGNAT
   if (a >= 224) return true; // Multicast & Reserved
   return false;
 }
 
-function isPrivateOrReservedIpv6(host) {
-  const clean = host.replace(/^\[|\]$/g, "").toLowerCase();
-  if (!clean.includes(":")) return false;
-  if (clean === "::1" || clean === "::" || clean === "0:0:0:0:0:0:0:1") return true;
-  if (clean.startsWith("fc") || clean.startsWith("fd")) return true; // Unique Local (fc00::/7)
-  if (clean.startsWith("fe8") || clean.startsWith("fe9") || clean.startsWith("fea") || clean.startsWith("feb")) {
-    return true; // Link-local (fe80::/10)
-  }
-  if (clean.startsWith("::ffff:")) {
-    const mappedIpv4 = clean.slice(7);
-    if (isPrivateOrReservedIpv4(mappedIpv4)) return true;
+export function isPrivateOrReservedIpv6(ip) {
+  const norm = String(ip || "").toLowerCase().replace(/^\[|\]$/g, "");
+  if (norm === "::1" || norm === "::") return true;
+  if (norm.startsWith("fc") || norm.startsWith("fd")) return true; // fc00::/7 ULA
+  if (/^fe[89ab]/.test(norm)) return true; // fe80::/10 link-local
+  if (norm.startsWith("::ffff:")) {
+    const mappedV4 = norm.slice(7);
+    if (net.isIPv4(mappedV4)) return isPrivateOrReservedIpv4(mappedV4);
   }
   return false;
 }
 
-/**
- * Kiểm tra URL và chặn tấn công SSRF (Server-Side Request Forgery).
- */
-export function validateSafeExternalUrl(rawUrl) {
-  const trimmed = String(rawUrl || "").trim();
-  if (!trimmed) {
-    return {
-      valid: false,
-      code: "ERR_EMPTY_URL",
-      message: "Vui lòng nhập địa chỉ URL trang web cần dịch (ví dụ: https://www.skyfirst.io.vn)."
-    };
-  }
+export function isPrivateIpAddress(ip) {
+  if (net.isIPv4(ip)) return isPrivateOrReservedIpv4(ip);
+  if (net.isIPv6(ip)) return isPrivateOrReservedIpv6(ip);
+  return false;
+}
 
+export function validateSafeExternalUrl(rawUrl) {
+  const str = String(rawUrl || "").trim();
+  if (!str) {
+    return { valid: false, code: "ERR_EMPTY_URL", message: "Vui lòng nhập địa chỉ URL trang web cần dịch." };
+  }
   let parsed;
   try {
-    parsed = new URL(trimmed);
+    parsed = new URL(str);
   } catch (_) {
-    return {
-      valid: false,
-      code: "ERR_INVALID_URL_FORMAT",
-      message: "Địa chỉ URL không hợp lệ. Vui lòng nhập đầy đủ giao thức http:// hoặc https://."
-    };
+    return { valid: false, code: "ERR_INVALID_URL", message: "Địa chỉ URL không hợp lệ. Vui lòng nhập đầy đủ https://..." };
   }
 
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    return {
-      valid: false,
-      code: "ERR_UNSUPPORTED_URL_SCHEME",
-      message: "Chỉ hỗ trợ dịch các trang web sử dụng giao thức chuẩn HTTP hoặc HTTPS."
-    };
+    return { valid: false, code: "ERR_UNSUPPORTED_PROTOCOL", message: "Chỉ hỗ trợ giao thức HTTP hoặc HTTPS." };
   }
-
   if (parsed.username || parsed.password) {
-    return {
-      valid: false,
-      code: "ERR_URL_CREDENTIALS_FORBIDDEN",
-      message: "Không cho phép địa chỉ URL chứa thông tin xác thực nội bộ."
-    };
+    return { valid: false, code: "ERR_URL_CREDENTIALS_BLOCKED", message: "Không cho phép URL chứa thông tin xác thực." };
   }
 
-  const hostname = parsed.hostname.toLowerCase();
-  for (const pat of PRIVATE_HOSTNAME_PATTERNS) {
+  const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  for (const pat of BLOCKED_HOST_PATTERNS) {
     if (pat.test(hostname)) {
       return {
         valid: false,
@@ -112,287 +100,320 @@ export function validateSafeExternalUrl(rawUrl) {
     }
   }
 
-  // Chặn biểu diễn IP dạng số nguyên thập phân, bát phân hoặc thập lục phân (ví dụ http://2130706433 hoặc http://0x7f000001)
-  if (/^(0x[0-9a-f]+|\d+)$/i.test(hostname)) {
+  if (isPrivateIpAddress(hostname)) {
     return {
       valid: false,
       code: "ERR_SSRF_BLOCKED",
-      message: "Hệ thống bảo mật chống SSRF không cho phép địa chỉ IP dạng số nguyên thô."
+      message: "Hệ thống bảo mật chống SSRF đã chặn truy cập vào dải địa chỉ IP nội bộ hoặc metadata."
     };
   }
 
-  if (isPrivateOrReservedIpv4(hostname) || isPrivateOrReservedIpv6(hostname)) {
-    return {
-      valid: false,
-      code: "ERR_SSRF_BLOCKED",
-      message: "Hệ thống bảo mật chống SSRF đã chặn truy cập vào dải địa chỉ IP nội bộ hoặc Metadata Endpoint."
-    };
-  }
-
-  if (!hostname.includes(".")) {
-    return {
-      valid: false,
-      code: "ERR_INVALID_PUBLIC_DOMAIN",
-      message: "Tên miền trang web không hợp lệ hoặc thuộc mạng cục bộ."
-    };
-  }
-
-  return {
-    valid: true,
-    normalizedUrl: parsed.toString(),
-    origin: parsed.origin,
-    hostname
-  };
+  return { valid: true, url: parsed };
 }
 
 /**
- * Biến đổi và dịch nội dung HTML của trang web, giữ nguyên bố cục, hình ảnh và liên kết.
+ * Kiểm tra DNS thực tế chống DNS Rebinding (bỏ qua khi test cung cấp `allowTestDnsBypass` cho URL cụ thể).
  */
-export async function translateHtmlDocument(rawHtml, pageOrigin, options = {}, env = {}) {
-  const sourceLang = options.sourceLang || "auto";
-  const targetLang = options.targetLang || "vi";
-  const domain = options.domain || "general";
-
-  // Tách riêng các khối <script>, <style>, <svg>, <noscript> để không làm hỏng mã nguồn trang
-  const preservedBlocks = [];
-  const maskedHtml = String(rawHtml || "").replace(
-    /<(script|style|svg|code|pre)\b[^>]*>[\s\S]*?<\/\1>/gi,
-    (match) => {
-      const token = `__WB_HTML_BLOCK_${preservedBlocks.length}__`;
-      preservedBlocks.push(match);
-      return token;
+async function verifyDnsSafe(hostname, env = {}) {
+  if (env && env.skipDnsLookupForTest === true) return { ok: true };
+  if (net.isIP(hostname)) {
+    if (isPrivateIpAddress(hostname)) {
+      return { ok: false, code: "ERR_SSRF_DNS_PRIVATE_IP", message: "IP đích thuộc mạng nội bộ bị chặn." };
     }
+    return { ok: true };
+  }
+  try {
+    const records = await dns.lookup(hostname, { all: true });
+    if (!records || records.length === 0) {
+      return { ok: false, code: "ERR_DNS_RESOLUTION_FAILED", message: "Không thể phân giải tên miền đích." };
+    }
+    for (const rec of records) {
+      if (isPrivateIpAddress(rec.address)) {
+        return {
+          ok: false,
+          code: "ERR_SSRF_DNS_REBINDING_BLOCKED",
+          message: "Tên miền phân giải về địa chỉ IP nội bộ (nguy cơ DNS Rebinding) nên đã bị chặn."
+        };
+      }
+    }
+    return { ok: true };
+  } catch (_) {
+    return { ok: false, code: "ERR_DNS_RESOLUTION_FAILED", message: "Không thể phân giải DNS của trang web." };
+  }
+}
+
+/**
+ * Làm sạch HTML triệt để chống XSS trước khi dịch và hiển thị.
+ */
+export function sanitizeHtmlForSafeDisplay(rawHtml, pageOrigin) {
+  let html = String(rawHtml || "");
+
+  // 1. Xóa hoàn toàn các thẻ thực thi hoặc nhúng nguy hiểm
+  html = html
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
+    .replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe>/gi, "")
+    .replace(/<object\b[^>]*>[\s\S]*?<\/object>/gi, "")
+    .replace(/<embed\b[^>]*\/?>/gi, "")
+    .replace(/<applet\b[^>]*>[\s\S]*?<\/applet>/gi, "")
+    .replace(/<base\b[^>]*\/?>/gi, "")
+    .replace(/<meta\b[^>]*http-equiv\s*=\s*["']?refresh["']?[^>]*\/?>/gi, "")
+    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, "");
+
+  // 2. Xóa toàn bộ thuộc tính sự kiện on* (onclick, onerror, onload, onmouseover...)
+  html = html.replace(/\s+on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "");
+
+  // 3. Chặn giao thức nguy hiểm javascript:, vbscript:, data:text/html trong href/src/action/xlink:href
+  html = html.replace(
+    /(\b(?:href|src|action|formaction|xlink:href)\s*=\s*)(["']?)\s*(?:javascript|vbscript|data\s*:\s*text\/html)[^"'>\s]*\2/gi,
+    '$1"#blocked-unsafe-url"'
   );
 
-  // Thu thập các đoạn văn bản nằm giữa các thẻ HTML
-  const textNodes = [];
+  // 4. Chuẩn hóa đường dẫn tương đối cho hình ảnh và liên kết về origin gốc (chỉ http/https)
+  if (pageOrigin) {
+    html = html.replace(/(\b(?:src|href)\s*=\s*)(["'])(\/[^"']*)\2/gi, (_, attr, q, rel) => {
+      if (rel.startsWith("//")) return `${attr}${q}https:${rel}${q}`;
+      return `${attr}${q}${pageOrigin}${rel}${q}`;
+    });
+  }
+
+  // 5. Gắn CSP nghiêm ngặt vào <head> để khóa hoàn toàn thực thi script nếu HTML được mở trong iframe/blob
+  const cspMeta =
+    '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\' https: http:; img-src https: http: data:; font-src https: http: data:;">';
+  if (/<head\b[^>]*>/i.test(html)) {
+    html = html.replace(/<head\b[^>]*>/i, (m) => `${m}\n${cspMeta}`);
+  } else {
+    html = `<!DOCTYPE html><html><head><meta charset="utf-8">${cspMeta}</head><body>${html}</body></html>`;
+  }
+
+  return html;
+}
+
+/**
+ * Đọc body từ stream có giới hạn dung lượng nghiêm ngặt (không dùng response.text() vô hạn).
+ */
+async function readBoundedResponseText(response, maxBytes = LIMITS.MAX_WEB_HTML_BYTES) {
+  if (!response.body || typeof response.body.getReader !== "function") {
+    const ab = await response.arrayBuffer();
+    if (ab.byteLength > maxBytes) {
+      const err = new Error("Dung lượng trang web vượt quá giới hạn 2 MB.");
+      err.code = "ERR_WEB_PAGE_TOO_LARGE";
+      err.status = 413;
+      throw err;
+    }
+    return new TextDecoder("utf-8").decode(ab);
+  }
+
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel();
+        const err = new Error("Dung lượng trang web vượt quá giới hạn tối đa 2 MB.");
+        err.code = "ERR_WEB_PAGE_TOO_LARGE";
+        err.status = 413;
+        throw err;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    merged.set(c, offset);
+    offset += c.byteLength;
+  }
+  return new TextDecoder("utf-8").decode(merged);
+}
+
+/**
+ * Dịch các nút văn bản hiển thị bên trong HTML đã được làm sạch XSS.
+ */
+export async function translateHtmlDocument(rawHtml, pageOrigin, options = {}, env = {}) {
+  const safeHtml = sanitizeHtmlForSafeDisplay(rawHtml, pageOrigin);
+
+  // Tách riêng <style> để không dịch mã CSS
+  const styleBlocks = [];
+  const withoutStyle = safeHtml.replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, (m) => {
+    const idx = styleBlocks.length;
+    styleBlocks.push(m);
+    return `<!--WB_STYLE_${idx}-->`;
+  });
+
+  // Trích xuất và dịch các đoạn văn bản giữa thẻ HTML
   const textRegex = />([^<>]+)</g;
-  let match;
-  while ((match = textRegex.exec(maskedHtml)) !== null) {
-    const rawSegment = match[1];
-    const cleaned = rawSegment.replace(/&nbsp;/gi, " ").trim();
-    if (
-      cleaned.length >= 2 &&
-      !/^__WB_HTML_BLOCK_\d+__$/.test(cleaned) &&
-      /[\p{L}]/u.test(cleaned)
-    ) {
-      textNodes.push({
-        fullMatch: match[0],
-        rawText: rawSegment,
-        trimmedText: cleaned,
-        index: match.index
-      });
+  const matches = [];
+  let m;
+  while ((m = textRegex.exec(withoutStyle)) !== null) {
+    const rawText = m[1];
+    const trimmed = rawText.trim();
+    if (trimmed.length >= 2 && !/^<!--/.test(trimmed)) {
+      matches.push({ index: m.index + 1, length: rawText.length, raw: rawText, trimmed });
     }
   }
 
-  const plainSample = textNodes
-    .slice(0, 40)
-    .map((n) => n.trimmedText)
-    .join(". ");
-  const detectedInfo = detectLanguage(plainSample || "Hello world");
+  let rebuilt = "";
+  let lastIdx = 0;
+  let translatedNodes = 0;
 
-  let translatedSegments = [];
-  let transMeta = null;
-
-  if (textNodes.length > 0) {
-    const batchStrings = textNodes.slice(0, 120).map((n) => n.trimmedText);
-    const joined = batchStrings.join("\n===WB_WEB_NODE===\n");
-    transMeta = await translateText(
+  for (const item of matches) {
+    rebuilt += withoutStyle.slice(lastIdx, item.index);
+    const res = await translateText(
       {
-        text: joined,
-        sourceLang,
-        targetLang,
-        domain
+        text: item.trimmed,
+        sourceLang: options.sourceLang || "auto",
+        targetLang: options.targetLang || "vi",
+        domain: options.domain || "general"
       },
       env
     );
-    if (transMeta.ok) {
-      translatedSegments = transMeta.translatedText.split(/\n?===WB_WEB_NODE===\n?/);
+    if (!res.ok) {
+      return res;
     }
+    const leadingWs = item.raw.match(/^\s*/)?.[0] || "";
+    const trailingWs = item.raw.match(/\s*$/)?.[0] || "";
+    rebuilt += `${leadingWs}${res.translatedText}${trailingWs}`;
+    translatedNodes += 1;
+    lastIdx = item.index + item.length;
   }
+  rebuilt += withoutStyle.slice(lastIdx);
 
-  let rebuiltHtml = "";
-  let lastCursor = 0;
-  const maxNodes = Math.min(textNodes.length, 120);
-  for (let i = 0; i < maxNodes; i++) {
-    const node = textNodes[i];
-    const translatedVal = translatedSegments[i] !== undefined ? translatedSegments[i] : node.trimmedText;
-    const leadingSpace = node.rawText.match(/^\s*/)?.[0] || "";
-    const trailingSpace = node.rawText.match(/\s*$/)?.[0] || "";
-
-    rebuiltHtml += maskedHtml.slice(lastCursor, node.index);
-    rebuiltHtml += `>${leadingSpace}${escapeHtml(translatedVal)}${trailingSpace}<`;
-    lastCursor = node.index + node.fullMatch.length;
-  }
-  rebuiltHtml += maskedHtml.slice(lastCursor);
-
-  // Khôi phục các khối <script>, <style>, <svg>
-  preservedBlocks.forEach((block, idx) => {
-    rebuiltHtml = rebuiltHtml.replaceAll(`__WB_HTML_BLOCK_${idx}__`, block);
-  });
-
-  // Chèn thẻ <base> và thanh thông báo Word Bridge Translation ở đầu trang đã dịch
-  const bannerHtml = `<div style="position:sticky;top:0;z-index:999999;background:#084c59;color:#ffffff;padding:8px 16px;font-family:Inter,sans-serif;font-size:13px;display:flex;justify-content:space-between;align-items:center;box-shadow:0 2px 8px rgba(0,0,0,0.15);">
-    <div><strong>Word Bridge Translation (Trans)</strong> · Đã dịch trang web từ <strong>${escapeHtml(transMeta?.sourceLanguage?.name || detectedInfo.name || sourceLang)}</strong> sang <strong>${escapeHtml(transMeta?.targetLanguage?.name || targetLang)}</strong></div>
-    <div><a href="${escapeHtml(pageOrigin)}" target="_blank" rel="noopener noreferrer" style="color:#a5f3fc;text-decoration:underline;">Mở trang gốc (${escapeHtml(pageOrigin)})</a> · <span>Zero User Data Storage</span></div>
-  </div>`;
-
-  const baseTag = `<base href="${escapeHtml(pageOrigin)}/" />`;
-  if (/<head\b[^>]*>/i.test(rebuiltHtml)) {
-    rebuiltHtml = rebuiltHtml.replace(/<head\b[^>]*>/i, (m) => `${m}\n${baseTag}`);
-  } else {
-    rebuiltHtml = `${baseTag}\n${rebuiltHtml}`;
-  }
-
-  if (/<body\b[^>]*>/i.test(rebuiltHtml)) {
-    rebuiltHtml = rebuiltHtml.replace(/<body\b[^>]*>/i, (m) => `${m}\n${bannerHtml}`);
-  } else {
-    rebuiltHtml = `${bannerHtml}\n${rebuiltHtml}`;
-  }
-
+  // Khôi phục các khối CSS thuần túy
+  const finalHtml = rebuilt.replace(/<!--WB_STYLE_(\d+)-->/g, (_, idx) => styleBlocks[Number(idx)] || "");
   return {
-    translatedHtml: rebuiltHtml,
-    translatedNodeCount: maxNodes,
-    sourceLanguage: transMeta?.sourceLanguage || {
-      resolved: detectedInfo.code !== "und" ? detectedInfo.code : "en",
-      name: detectedInfo.name
-    },
-    targetLanguage: transMeta?.targetLanguage || {
-      code: targetLang,
-      name: targetLang
-    },
-    sourcePreview: plainSample.slice(0, 600),
-    translatedPreview: translatedSegments.slice(0, 20).join(" ").slice(0, 600)
+    ok: true,
+    translatedHtml: finalHtml,
+    translatedNodes
   };
 }
 
 /**
- * Dịch trang web từ URL được người dùng cung cấp.
+ * Tải trang web an toàn (kiểm tra SSRF từng hop redirect + DNS) và dịch nội dung.
  */
 export async function translateWebsiteUrl(payload = {}, env = {}) {
-  const startTime = Date.now();
   const urlCheck = validateSafeExternalUrl(payload.url);
   if (!urlCheck.valid) {
-    return {
-      ok: false,
-      code: urlCheck.code,
-      message: urlCheck.message
-    };
+    return { ok: false, status: 400, code: urlCheck.code, message: urlCheck.message, zeroUserDataStorage: true };
   }
 
-  const sourceLang = String(payload.sourceLang || "auto").trim();
-  const targetLang = String(payload.targetLang || "vi").trim();
-  const domain = String(payload.domain || "general").trim();
+  let currentUrl = urlCheck.url;
+  const fetchFn = (env && typeof env.customFetch === "function") ? env.customFetch : fetch;
 
-  let rawHtml = "";
-
-  // Hỗ trợ kiểm thử nội bộ hoặc custom fetcher
-  if (typeof env?.WEBSITE_FETCH_HANDLER === "function") {
-    const customRes = await env.WEBSITE_FETCH_HANDLER(urlCheck.normalizedUrl);
-    if (!customRes.ok) {
-      return {
-        ok: false,
-        code: customRes.code || "ERR_WEBSITE_UNREACHABLE",
-        message: customRes.message || "Không thể truy cập trang web đích."
-      };
+  let finalResponse = null;
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    const dnsCheck = await verifyDnsSafe(currentUrl.hostname, env);
+    if (!dnsCheck.ok) {
+      return { ok: false, status: 403, code: dnsCheck.code, message: dnsCheck.message, zeroUserDataStorage: true };
     }
-    rawHtml = customRes.html;
-  } else {
+
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 9000);
+    const timer = setTimeout(() => controller.abort(), LIMITS.REQUEST_TIMEOUT_MS);
+    let res;
     try {
-      const response = await fetch(urlCheck.normalizedUrl, {
+      res = await fetchFn(currentUrl.toString(), {
         method: "GET",
-        redirect: "follow",
+        redirect: "manual",
+        signal: controller.signal,
         headers: {
-          "User-Agent": "WordBridgeTranslationBot/1.0 (+https://dichthuat.wordbridge.io.vn)",
-          Accept: "text/html,application/xhtml+xml"
-        },
-        signal: controller.signal
-      });
-      clearTimeout(timer);
-
-      if (response.status === 401 || response.status === 403) {
-        return {
-          ok: false,
-          code: "ERR_WEBSITE_ACCESS_RESTRICTED",
-          message:
-            "Trang web đích yêu cầu đăng nhập, bật tường lửa chống bot (403/401) hoặc giới hạn quyền truy cập nên không thể dịch trực tiếp."
-        };
-      }
-
-      if (!response.ok) {
-        return {
-          ok: false,
-          code: "ERR_WEBSITE_HTTP_ERROR",
-          message: `Trang web đích trả về mã lỗi HTTP ${response.status}. Vui lòng kiểm tra lại đường dẫn.`
-        };
-      }
-
-      // Kiểm tra chống SSRF qua redirect cuối cùng
-      if (response.url) {
-        const finalCheck = validateSafeExternalUrl(response.url);
-        if (!finalCheck.valid) {
-          return {
-            ok: false,
-            code: "ERR_SSRF_REDIRECT_BLOCKED",
-            message: "Đã chặn chuyển hướng (Redirect) từ trang web sang địa chỉ mạng nội bộ."
-          };
+          "User-Agent": "WordBridgeTranslation/2.0 (+https://dichthuat.wordbridge.io.vn)",
+          "Accept": "text/html,application/xhtml+xml;q=0.9"
         }
-      }
-
-      const contentType = (response.headers.get("content-type") || "").toLowerCase();
-      if (contentType && !contentType.includes("text/html") && !contentType.includes("application/xhtml+xml")) {
-        return {
-          ok: false,
-          code: "ERR_NOT_HTML_WEBPAGE",
-          message: "Đường dẫn URL không phải là trang web HTML (ví dụ: tệp nhị phân hoặc JSON)."
-        };
-      }
-
-      rawHtml = await response.text();
+      });
     } catch (_) {
       clearTimeout(timer);
       return {
         ok: false,
-        code: "ERR_WEBSITE_UNREACHABLE",
-        message:
-          "Không thể kết nối tới trang web đích (quá thời gian chờ, tên miền không tồn tại hoặc máy chủ từ chối kết nối)."
+        status: 502,
+        code: "ERR_WEBSITE_FETCH_FAILED",
+        message: "Không thể truy cập trang web đích (quá thời gian hoặc trang web chặn truy cập tự động).",
+        zeroUserDataStorage: true
       };
     }
+    clearTimeout(timer);
+
+    if (res.status >= 300 && res.status < 400) {
+      const location = res.headers.get("location");
+      if (!location) break;
+      if (hop === MAX_REDIRECTS) {
+        return {
+          ok: false,
+          status: 400,
+          code: "ERR_TOO_MANY_REDIRECTS",
+          message: "Trang web chuyển hướng quá số lần cho phép (tối đa 5 bước).",
+          zeroUserDataStorage: true
+        };
+      }
+      const nextUrlStr = new URL(location, currentUrl).toString();
+      const nextCheck = validateSafeExternalUrl(nextUrlStr);
+      if (!nextCheck.valid) {
+        return {
+          ok: false,
+          status: 403,
+          code: "ERR_SSRF_REDIRECT_BLOCKED",
+          message: "Đã chặn chuyển hướng (Redirect) từ trang web sang địa chỉ mạng nội bộ.",
+          zeroUserDataStorage: true
+        };
+      }
+      currentUrl = nextCheck.url;
+      continue;
+    }
+
+    finalResponse = res;
+    break;
   }
 
-  if (!rawHtml || !rawHtml.trim()) {
+  if (!finalResponse || !finalResponse.ok) {
     return {
       ok: false,
-      code: "ERR_EMPTY_WEBPAGE",
-      message: "Trang web đích không trả về nội dung HTML hoặc chỉ sử dụng mã nguồn động yêu cầu đăng nhập."
+      status: 502,
+      code: "ERR_WEBSITE_HTTP_ERROR",
+      message: `Trang web trả về mã lỗi HTTP ${finalResponse ? finalResponse.status : 502} hoặc yêu cầu đăng nhập.`,
+      zeroUserDataStorage: true
     };
   }
 
-  const transformed = await translateHtmlDocument(
-    rawHtml.slice(0, 250000),
-    urlCheck.origin,
-    { sourceLang, targetLang, domain },
-    env
-  );
+  const contentType = (finalResponse.headers.get("content-type") || "").toLowerCase();
+  if (!contentType.includes("text/html") && !contentType.includes("application/xhtml+xml")) {
+    return {
+      ok: false,
+      status: 415,
+      code: "ERR_UNSUPPORTED_CONTENT_TYPE",
+      message: "Liên kết không trả về trang web HTML hợp lệ.",
+      zeroUserDataStorage: true
+    };
+  }
+
+  let rawHtml;
+  try {
+    rawHtml = await readBoundedResponseText(finalResponse, LIMITS.MAX_WEB_HTML_BYTES);
+  } catch (err) {
+    return {
+      ok: false,
+      status: err?.status || 413,
+      code: err?.code || "ERR_WEB_PAGE_TOO_LARGE",
+      message: err?.message || "Dung lượng trang web vượt quá giới hạn.",
+      zeroUserDataStorage: true
+    };
+  }
+
+  const translated = await translateHtmlDocument(rawHtml, currentUrl.origin, payload, env);
+  if (!translated.ok) return translated;
 
   return {
     ok: true,
-    url: urlCheck.normalizedUrl,
-    hostname: urlCheck.hostname,
-    sourceLanguage: transformed.sourceLanguage,
-    targetLanguage: transformed.targetLanguage,
-    translatedNodeCount: transformed.translatedNodeCount,
-    sourcePreview: transformed.sourcePreview,
-    translatedPreview: transformed.translatedPreview,
-    translatedHtml: transformed.translatedHtml,
-    durationMs: Date.now() - startTime,
-    privacyGuarantee: {
-      zeroUserDataStorage: true,
-      ssrfProtected: true,
-      storedInD1: false,
-      storedInR2: false
-    }
+    status: 200,
+    sourceUrl: currentUrl.toString(),
+    translatedHtml: translated.translatedHtml,
+    translatedNodes: translated.translatedNodes,
+    sanitized: true,
+    sandboxRecommended: true,
+    zeroUserDataStorage: true
   };
 }

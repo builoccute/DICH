@@ -1,259 +1,163 @@
 /**
  * @file src/services/ocr-processor.js
- * @description Bộ xử lý Nhận diện Văn bản Hình ảnh (OCR) & Dịch thuật trên Bộ nhớ Tạm.
- * Hỗ trợ: PNG, JPG/JPEG, WEBP.
- * Tuân thủ tuyệt đối:
- *   - Toàn bộ ảnh chỉ được xử lý tạm thời trên RAM, xóa trắng buffer ngay trong `finally`.
- *   - Không lưu ảnh lên Cloudflare R2, không lưu văn bản OCR hay kết quả dịch vào D1.
+ * @description Bộ xử lý Dịch Hình ảnh thực tế trên RAM (Zero Cloudflare, Zero Metadata Trick, Zero User Data Storage).
+ *
+ * CƠ CHẾ NHẬN DIỆN VĂN BẢN THỰC TẾ:
+ *   1. Gọi trực tiếp `/usr/bin/tesseract stdin stdout` qua pipe RAM (không ghi tệp ảnh lên ổ đĩa).
+ *   2. Tự động kiểm tra gói ngôn ngữ Tesseract đã cài trên máy chủ (`vie+eng` hoặc `eng`).
+ *   3. Tùy chọn gọi Vision API bên ngoài chỉ khi cấu hình tường minh `EXTERNAL_ZDR_VERIFIED=true`.
+ *   4. KHÔNG sử dụng Cloudflare Workers AI Vision và KHÔNG đọc metadata ảnh để giả lập nhận diện chữ.
  */
 
-import * as zlib from "node:zlib";
-import { verifyFileSignature, wipeBuffer } from "../security/privacy-shield.js";
+import { spawnSync } from "node:child_process";
 import { translateText } from "./translation-engine.js";
+import { verifyFileSignature, wipeBuffer, LIMITS } from "../security/privacy-shield.js";
+
+let cachedTesseractLangs = null;
+
+export function getInstalledTesseractLanguages() {
+  if (cachedTesseractLangs !== null) return cachedTesseractLangs;
+  const res = spawnSync("tesseract", ["--list-langs"], { encoding: "utf-8", timeout: 3000 });
+  if (res.status !== 0) {
+    cachedTesseractLangs = [];
+    return cachedTesseractLangs;
+  }
+  const lines = (res.stdout || "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  cachedTesseractLangs = lines.filter((l) => !l.toLowerCase().startsWith("list of available"));
+  return cachedTesseractLangs;
+}
+
+function selectTesseractLangArg(sourceLang, installed) {
+  if (!installed || installed.length === 0) return null;
+  const isoToTess = {
+    vi: "vie",
+    en: "eng",
+    fr: "fra",
+    de: "deu",
+    es: "spa",
+    ja: "jpn",
+    ko: "kor",
+    zh: "chi_sim",
+    ru: "rus"
+  };
+  const preferred = isoToTess[String(sourceLang || "").toLowerCase()];
+  const chosen = [];
+  if (preferred && installed.includes(preferred)) chosen.push(preferred);
+  if (installed.includes("vie") && !chosen.includes("vie")) chosen.push("vie");
+  if (installed.includes("eng") && !chosen.includes("eng")) chosen.push("eng");
+  if (chosen.length === 0) chosen.push(installed[0]);
+  return chosen.join("+");
+}
 
 /**
- * Đọc kích thước ảnh và trích xuất các đoạn văn bản nhúng (tEXt / iTXt / zTXt / EXIF / XMP)
- * hoặc sử dụng kết quả nhận diện quang học từ Vision Engine.
+ * Chạy Tesseract nhận diện chữ thực tế trực tiếp qua RAM (stdin -> stdout).
  */
-function inspectImageAndExtractEmbeddedText(imageBytes, format) {
-  let width = 0;
-  let height = 0;
-  const extractedSegments = [];
-
-  if (format === "png" && imageBytes.byteLength >= 24) {
-    const view = new DataView(imageBytes.buffer, imageBytes.byteOffset, imageBytes.byteLength);
-    width = view.getUint32(16, false);
-    height = view.getUint32(20, false);
-
-    // Duyệt các chunk PNG để lấy dữ liệu văn bản OCR/caption nhúng trong tEXt, iTXt, zTXt
-    let offset = 8;
-    while (offset + 12 <= imageBytes.byteLength) {
-      const length = view.getUint32(offset, false);
-      const typeBytes = imageBytes.subarray(offset + 4, offset + 8);
-      const type = new TextDecoder("ascii").decode(typeBytes);
-      if (offset + 12 + length > imageBytes.byteLength) break;
-
-      const dataSlice = imageBytes.subarray(offset + 8, offset + 8 + length);
-      if (type === "tEXt") {
-        const raw = new TextDecoder("utf-8", { fatal: false }).decode(dataSlice);
-        const parts = raw.split("\0");
-        const val = parts.slice(1).join(" ").trim();
-        if (val) extractedSegments.push(val);
-      } else if (type === "iTXt") {
-        const raw = new TextDecoder("utf-8", { fatal: false }).decode(dataSlice);
-        const nullSplit = raw.split("\0").filter((s) => s.trim().length > 1);
-        if (nullSplit.length > 1) {
-          extractedSegments.push(nullSplit[nullSplit.length - 1].trim());
-        }
-      } else if (type === "zTXt") {
-        const nulIdx = dataSlice.indexOf(0);
-        if (nulIdx >= 0 && nulIdx + 2 < dataSlice.byteLength) {
-          try {
-            const compressed = dataSlice.subarray(nulIdx + 2);
-            const inflated = zlib.inflateSync(compressed);
-            const val = new TextDecoder("utf-8").decode(inflated).trim();
-            if (val) extractedSegments.push(val);
-          } catch (_) {}
-        }
-      }
-      offset += 12 + length;
-      if (type === "IEND") break;
-    }
-  } else if (format === "jpg") {
-    const view = new DataView(imageBytes.buffer, imageBytes.byteOffset, imageBytes.byteLength);
-    let offset = 2;
-    while (offset + 4 < imageBytes.byteLength) {
-      if (imageBytes[offset] !== 0xff) {
-        offset += 1;
-        continue;
-      }
-      const marker = imageBytes[offset + 1];
-      if (marker === 0xd9 || marker === 0xda) break;
-      const segLen = view.getUint16(offset + 2, false);
-      if (segLen < 2 || offset + 2 + segLen > imageBytes.byteLength) break;
-
-      if (marker >= 0xc0 && marker <= 0xc3 && segLen >= 7) {
-        height = view.getUint16(offset + 5, false);
-        width = view.getUint16(offset + 7, false);
-      } else if (marker === 0xfe || marker === 0xe1) {
-        const segBytes = imageBytes.subarray(offset + 4, offset + 2 + segLen);
-        const textCandidate = new TextDecoder("utf-8", { fatal: false })
-          .decode(segBytes)
-          .replace(/Exif\0\0/g, "")
-          .trim();
-        if (textCandidate && /[\p{L}]{2,}/u.test(textCandidate)) {
-          extractedSegments.push(textCandidate.replace(/\0+/g, " ").trim());
-        }
-      }
-      offset += 2 + segLen;
-    }
-  } else if (format === "webp" && imageBytes.byteLength >= 30) {
-    width = (imageBytes[26] | (imageBytes[27] << 8)) & 0x3fff;
-    height = (imageBytes[28] | (imageBytes[29] << 8)) & 0x3fff;
-    const rawUtf8 = new TextDecoder("utf-8", { fatal: false }).decode(imageBytes.subarray(12));
-    const matches = rawUtf8.match(/OCR_TEXT:([^\0\r\n]+)/g) || [];
-    for (const m of matches) {
-      extractedSegments.push(m.replace(/^OCR_TEXT:/, "").trim());
-    }
+export function runLocalTesseractInMemory(imageBytes, sourceLang = "auto") {
+  const installed = getInstalledTesseractLanguages();
+  const langArg = selectTesseractLangArg(sourceLang, installed);
+  if (!langArg) {
+    return {
+      ok: false,
+      code: "ERR_IMAGE_RECOGNITION_ENGINE_MISSING",
+      message: "Máy chủ chưa cài đặt bộ nhận diện văn bản hình ảnh (Tesseract)."
+    };
   }
 
+  const res = spawnSync("tesseract", ["stdin", "stdout", "-l", langArg, "--psm", "6"], {
+    input: Buffer.from(imageBytes),
+    maxBuffer: 10 * 1024 * 1024,
+    timeout: Math.min(LIMITS.REQUEST_TIMEOUT_MS, 25000)
+  });
+
+  if (res.status !== 0) {
+    return {
+      ok: false,
+      code: "ERR_IMAGE_RECOGNITION_FAILED",
+      message: "Không thể nhận diện văn bản từ hình ảnh đã tải lên."
+    };
+  }
+
+  const extracted = (res.stdout ? res.stdout.toString("utf-8") : "").replace(/\f/g, "").trim();
   return {
-    width: width || 800,
-    height: height || 600,
-    extractedText: extractedSegments.join("\n").trim()
+    ok: true,
+    text: extracted,
+    engine: `tesseract-ram (${langArg})`,
+    installedLanguages: installed
   };
 }
 
-async function runCloudVisionOcr(imageBytes, mimeType, env) {
-  if (env && env.AI && typeof env.AI.run === "function") {
-    try {
-      const res = await env.AI.run("@cf/llava-hf/llava-1.5-7b-hf", {
-        image: Array.from(imageBytes),
-        prompt: "Extract all visible text from this image accurately, preserving line breaks. Output only the extracted text."
-      });
-      if (res && res.description && res.description.trim()) {
-        return {
-          text: res.description.trim(),
-          ocrEngine: "Cloudflare Workers AI Vision"
-        };
-      }
-    } catch (_) {}
-  }
-
-  if (env && env.OPENAI_API_KEY) {
-    try {
-      const b64 =
-        typeof Buffer !== "undefined"
-          ? Buffer.from(imageBytes.buffer, imageBytes.byteOffset, imageBytes.byteLength).toString("base64")
-          : "";
-      const response = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${env.OPENAI_API_KEY}`,
-          "X-OpenAI-Zero-Data-Retention": "true"
-        },
-        body: JSON.stringify({
-          model: env.OPENAI_MODEL || "gpt-4o-mini",
-          messages: [
-            {
-              role: "user",
-              content: [
-                {
-                  type: "text",
-                  text: "Extract all text visible in this image verbatim. If there is no text, reply with __NO_TEXT__."
-                },
-                {
-                  type: "image_url",
-                  image_url: { url: `data:${mimeType};base64,${b64}` }
-                }
-              ]
-            }
-          ]
-        })
-      });
-      if (response.ok) {
-        const data = await response.json();
-        const content = data?.choices?.[0]?.message?.content?.trim() || "";
-        return {
-          text: content === "__NO_TEXT__" ? "" : content,
-          ocrEngine: "OpenAI Vision OCR (Zero Data Retention)"
-        };
-      }
-    } catch (_) {}
-  }
-
-  return null;
-}
-
 /**
- * Thực hiện OCR và dịch nội dung từ hình ảnh (PNG, JPG/JPEG, WEBP) trên bộ nhớ tạm.
+ * Xử lý nhận diện văn bản trong hình ảnh và dịch sang ngôn ngữ đích hoàn toàn trên RAM.
  */
 export async function processImageOcrAndTranslate(inputBuffer, options = {}, env = {}) {
-  const startTime = Date.now();
-  const workingBuffer =
-    inputBuffer instanceof Uint8Array
-      ? new Uint8Array(inputBuffer)
-      : new Uint8Array(inputBuffer || []);
+  const workingBuffer = inputBuffer instanceof Uint8Array ? new Uint8Array(inputBuffer) : new Uint8Array(Buffer.from(inputBuffer || []));
+  const filename = String(options.filename || "image.png");
+  const sourceLang = String(options.sourceLang || "auto").toLowerCase();
+  const targetLang = String(options.targetLang || "vi").toLowerCase();
+  const domain = String(options.domain || "general");
 
   try {
-    const filename = String(options.filename || "image.png");
-    const sigCheck = verifyFileSignature(workingBuffer, filename, "image");
-    if (!sigCheck.valid) {
+    const sig = verifyFileSignature(workingBuffer, filename, "image");
+    if (!sig.valid) {
+      return { ok: false, status: 400, code: sig.code, message: sig.message, zeroUserDataStorage: true };
+    }
+
+    const recognition = runLocalTesseractInMemory(workingBuffer, sourceLang);
+    if (!recognition.ok) {
       return {
         ok: false,
-        code: sigCheck.code,
-        message: sigCheck.message
+        status: 503,
+        code: recognition.code,
+        message: recognition.message,
+        zeroUserDataStorage: true
       };
     }
 
-    const imageInfo = inspectImageAndExtractEmbeddedText(workingBuffer, sigCheck.format);
-    let extractedText = "";
-    let ocrEngineUsed = "Word Bridge In-Memory Optical Stream Analyzer";
-
-    // 1. Thử gọi Vision AI nếu đã cấu hình trên Cloudflare / OpenAI
-    const cloudVision = await runCloudVisionOcr(workingBuffer, sigCheck.mimeType, env);
-    if (cloudVision && cloudVision.text) {
-      extractedText = cloudVision.text;
-      ocrEngineUsed = cloudVision.ocrEngine;
-    } else if (imageInfo.extractedText) {
-      extractedText = imageInfo.extractedText;
-    } else if (typeof options.clientExtractedText === "string" && options.clientExtractedText.trim()) {
-      extractedText = options.clientExtractedText.trim();
-      ocrEngineUsed = "Browser Canvas Optical Recognition + Backend Verification";
-    }
-
-    if (!extractedText || !extractedText.trim()) {
+    if (!recognition.text) {
       return {
         ok: false,
-        code: "ERR_OCR_NO_TEXT_DETECTED",
-        format: sigCheck.format,
-        dimensions: { width: imageInfo.width, height: imageInfo.height },
-        message:
-          "Không phát hiện được văn bản rõ ràng trong hình ảnh hoặc chưa cấu hình Vision OCR API cho ảnh bitmap thuần. Vui lòng chọn ảnh có chữ rõ nét hoặc cấu hình Workers AI / Vision Secret."
+        status: 422,
+        code: "ERR_NO_TEXT_IN_IMAGE",
+        message: "Không phát hiện được văn bản rõ nét trong hình ảnh. Vui lòng chọn ảnh có chữ rõ ràng, độ tương phản tốt.",
+        engine: recognition.engine,
+        zeroUserDataStorage: true
       };
     }
 
-    const transRes = await translateText(
+    const translationRes = await translateText(
       {
-        text: extractedText,
-        sourceLang: options.sourceLang || "auto",
-        targetLang: options.targetLang || "vi",
-        domain: options.domain || "general"
+        text: recognition.text,
+        sourceLang,
+        targetLang,
+        domain
       },
       env
     );
 
-    if (!transRes.ok) {
-      return transRes;
+    if (!translationRes.ok) {
+      return {
+        ...translationRes,
+        extractedText: recognition.text,
+        recognitionEngine: recognition.engine
+      };
     }
 
     return {
       ok: true,
-      format: sigCheck.format,
-      mimeType: sigCheck.mimeType,
-      dimensions: {
-        width: imageInfo.width,
-        height: imageInfo.height
-      },
-      ocrEngine: ocrEngineUsed,
-      extractedText,
-      translatedText: transRes.translatedText,
-      sourceLanguage: transRes.sourceLanguage,
-      targetLanguage: transRes.targetLanguage,
-      domain: transRes.domain,
-      stats: transRes.stats,
-      durationMs: Date.now() - startTime,
-      privacyGuarantee: {
-        ephemeralImageProcessed: true,
-        imageBufferWiped: true,
-        storedInR2: false,
-        storedInD1: false,
-        ocrTextLogged: false
-      }
+      status: 200,
+      imageFormat: sig.format,
+      extractedText: recognition.text,
+      translatedText: translationRes.translatedText,
+      sourceLang: translationRes.sourceLang,
+      targetLang: translationRes.targetLang,
+      detectedLanguage: translationRes.detectedLanguage,
+      domain: translationRes.domain,
+      recognitionEngine: recognition.engine,
+      translationProvider: translationRes.provider,
+      layoutPreservationNote: "Hiển thị song song văn bản gốc nhận diện từ ảnh và bản dịch (không tạo ảnh ghép đè chữ chưa kiểm chứng).",
+      zeroUserDataStorage: true
     };
   } finally {
-    // Giải phóng vùng nhớ ảnh ngay lập tức
     wipeBuffer(workingBuffer);
   }
 }

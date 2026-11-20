@@ -1,7 +1,7 @@
 /**
  * WORD BRIDGE – PURE EDGE & ES MODULE RUNTIME UTILITIES
  * Hoàn toàn không chứa bất kỳ lệnh import/require nào tới "child_process", "crypto", "fs", "http", "path", "url".
- * Tương thích 100% với Cloudflare Workers (ES Module format) và Node.js.
+ * Tương thích 100% với Node.js ES Module độc lập.
  */
 
 export function getNodeBuiltin(_name) {
